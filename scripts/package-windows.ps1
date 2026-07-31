@@ -1,4 +1,7 @@
-param([switch]$Unpacked)
+param(
+  [switch]$Unpacked,
+  [switch]$NoPublish
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -21,5 +24,7 @@ if ($LASTEXITCODE -ne 0) { throw "Application build failed with exit code $LASTE
 $env:ELECTRON_BUILDER_NSIS_DIR = $nsisDirectory
 $env:ZX_WALLPAPER_RCEDI_PATH = $rceditPath
 $target = if ($Unpacked) { 'dir' } else { 'nsis' }
-& npx.cmd electron-builder --win $target --config.win.signAndEditExecutable=false
+$builderArguments = @('--win', $target, '--config.win.signAndEditExecutable=false')
+if ($NoPublish) { $builderArguments += @('--publish', 'never') }
+& npx.cmd electron-builder @builderArguments
 if ($LASTEXITCODE -ne 0) { throw "Electron Builder failed with exit code $LASTEXITCODE" }

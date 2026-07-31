@@ -76,7 +76,7 @@ jobs:
           }
 
       - name: Package installer
-        run: npm run dist
+        run: npm run dist -- -NoPublish
 
       - name: Verify packaged preload bridge
         run: npm run test:packaged-preload
