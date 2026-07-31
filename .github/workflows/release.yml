@@ -81,6 +81,9 @@ jobs:
       - name: Verify packaged brand logo
         run: npm run test:packaged-brand-logo
 
+      - name: Verify startup visibility
+        run: npm run test:startup-visibility
+
       - name: Verify packaged preload bridge
         run: npm run test:packaged-preload
 

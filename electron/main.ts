@@ -1150,7 +1150,10 @@ class WallpaperService {
     });
   }
   private applyLoginItemSetting() {
-    app.setLoginItemSettings({ openAtLogin: this.store.value.autoStart });
+    app.setLoginItemSettings({
+      openAtLogin: this.store.value.autoStart,
+      args: ["--background"],
+    });
   }
   private applyGlobalShortcut() {
     globalShortcut.unregisterAll();
@@ -1713,7 +1716,7 @@ app.whenReady().then(async () => {
   tray = new Tray(createTrayIcon());
   tray.on("double-click", showWindow);
   refreshTray();
-  if (!app.isPackaged || store.value.folders.length <= 1) showWindow();
+  if (!process.argv.includes("--background")) showWindow();
   ipcMain.handle("state:get", () => service.getState());
   ipcMain.handle("config:update", async (_event, patch: Partial<AppConfig>) => {
     await service.updateConfig(patch);
