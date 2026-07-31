@@ -1,0 +1,5 @@
+interface:
+  display_name: "Grill with Docs"
+  short_description: "访谈设计并编写文档"
+policy:
+  allow_implicit_invocation: false

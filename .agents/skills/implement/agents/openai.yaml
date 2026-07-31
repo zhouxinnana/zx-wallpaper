@@ -1,0 +1,5 @@
+interface:
+  display_name: "Implement"
+  short_description: "根据规格或任务完成实现"
+policy:
+  allow_implicit_invocation: false

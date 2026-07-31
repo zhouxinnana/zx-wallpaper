@@ -1,0 +1,5 @@
+interface:
+  display_name: "Setup Matt Pocock Skills"
+  short_description: "为项目配置这些技能"
+policy:
+  allow_implicit_invocation: false

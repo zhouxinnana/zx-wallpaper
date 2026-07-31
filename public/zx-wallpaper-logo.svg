@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title>ZX Wallpaper</title>
+  <path d="M22 6h84l16 16v84l-16 16H22L6 106V22z" fill="#11161c"/>
+  <path d="M22 6h84l16 16v84l-16 16H22L6 106V22z" fill="none" stroke="#79838e" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M27 30h59v14H54l37 40v14H27V84h36L27 44z" fill="#eef2f5"/>
+  <path d="M78 30l26 68M104 30L78 98" fill="none" stroke="#aab4be" stroke-width="13" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M22 6h84l16 16" fill="none" stroke="#d8dee5" stroke-width="2" stroke-linecap="square"/>
+</svg>

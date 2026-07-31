@@ -1,0 +1,5 @@
+interface:
+  display_name: "To Spec"
+  short_description: "将对话整理为规格说明"
+policy:
+  allow_implicit_invocation: false

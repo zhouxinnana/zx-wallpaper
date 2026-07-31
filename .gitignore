@@ -1,0 +1,10 @@
+.firecrawl/
+.codegraph/
+.playwright-cli/
+.playwright-mcp/
+node_modules/
+dist/
+dist-electron/
+release/
+output/
+tools/electron-builder/

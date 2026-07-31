@@ -1,0 +1,5 @@
+interface:
+  display_name: "Wayfinder"
+  short_description: "将大型工作拆为决策任务图"
+policy:
+  allow_implicit_invocation: false
