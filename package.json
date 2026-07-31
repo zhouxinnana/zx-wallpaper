@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && vite build && vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts",
     "test:packaged-preload": "node scripts/verify-packaged-preload.mjs",
+    "test:packaged-brand-logo": "node scripts/verify-packaged-brand-logo.mjs",
     "test:packaged-wallpaper-switch": "node scripts/verify-packaged-wallpaper-switch.mjs",
     "test:packaged-online-source": "node scripts/verify-packaged-online-source.mjs",
     "test:built-in-sources": "node scripts/verify-built-in-sources.mjs",

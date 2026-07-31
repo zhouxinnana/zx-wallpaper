@@ -189,7 +189,7 @@ function Sidebar({
     <aside className="sidebar">
       <div className="brand" aria-label="ZX Wallpaper">
         <span className="brand-mark">
-          <img src="/zx-wallpaper-logo.svg" alt="" />
+          <img src="./zx-wallpaper-logo.svg" alt="" />
         </span>
         <span className="brand-name">ZX Wallpaper</span>
       </div>

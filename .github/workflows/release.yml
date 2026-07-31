@@ -78,6 +78,9 @@ jobs:
       - name: Package installer
         run: npm run dist -- -NoPublish
 
+      - name: Verify packaged brand logo
+        run: npm run test:packaged-brand-logo
+
       - name: Verify packaged preload bridge
         run: npm run test:packaged-preload
 
