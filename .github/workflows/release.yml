@@ -38,25 +38,40 @@ jobs:
         run: |
           $toolsRoot = Join-Path $env:GITHUB_WORKSPACE "tools\electron-builder"
           $downloads = Join-Path $env:RUNNER_TEMP "electron-builder-downloads"
+          $archiver = Resolve-Path "node_modules\7zip-bin\win\x64\7za.exe"
           New-Item -ItemType Directory -Force -Path $toolsRoot, $downloads | Out-Null
 
           $archives = @(
             @{
               Name = "nsis-3.0.4.1.7z"
               Url = "https://github.com/electron-userland/electron-builder-binaries/releases/download/nsis-3.0.4.1/nsis-3.0.4.1.7z"
+              Directory = "nsis-3.0.4.1"
+              RequiredFile = "Bin\makensis.exe"
+              Files = @()
             },
             @{
               Name = "winCodeSign-2.6.0.7z"
               Url = "https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z"
+              Directory = "winCodeSign-2.6.0"
+              RequiredFile = "rcedit-x64.exe"
+              Files = @("rcedit-x64.exe")
             }
           )
 
           foreach ($archive in $archives) {
             $archivePath = Join-Path $downloads $archive.Name
+            $extractDirectory = Join-Path $toolsRoot $archive.Directory
             Invoke-WebRequest -Uri $archive.Url -OutFile $archivePath
-            7z x $archivePath "-o$toolsRoot" -y
+            New-Item -ItemType Directory -Force -Path $extractDirectory | Out-Null
+            $arguments = @("x", $archivePath, "-o$extractDirectory", "-y")
+            $arguments += $archive.Files
+            & $archiver @arguments
             if ($LASTEXITCODE -ne 0) {
               throw "Failed to extract $($archive.Name)."
+            }
+            $requiredPath = Join-Path $extractDirectory $archive.RequiredFile
+            if (-not (Test-Path -LiteralPath $requiredPath)) {
+              throw "Archive $($archive.Name) did not provide $requiredPath."
             }
           }
 
