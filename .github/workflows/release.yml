@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Build and publish Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify release version
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag '$env:GITHUB_REF_NAME' must match package.json version 'v$version'."
+          }
+
+      # The local packaging script intentionally requires these tools to avoid
+      # relying on electron-builder's transient download cache.
+      - name: Prepare electron-builder tools
+        shell: pwsh
+        run: |
+          $toolsRoot = Join-Path $env:GITHUB_WORKSPACE "tools\electron-builder"
+          $downloads = Join-Path $env:RUNNER_TEMP "electron-builder-downloads"
+          New-Item -ItemType Directory -Force -Path $toolsRoot, $downloads | Out-Null
+
+          $archives = @(
+            @{
+              Name = "nsis-3.0.4.1.7z"
+              Url = "https://github.com/electron-userland/electron-builder-binaries/releases/download/nsis-3.0.4.1/nsis-3.0.4.1.7z"
+            },
+            @{
+              Name = "winCodeSign-2.6.0.7z"
+              Url = "https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z"
+            }
+          )
+
+          foreach ($archive in $archives) {
+            $archivePath = Join-Path $downloads $archive.Name
+            Invoke-WebRequest -Uri $archive.Url -OutFile $archivePath
+            7z x $archivePath "-o$toolsRoot" -y
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to extract $($archive.Name)."
+            }
+          }
+
+      - name: Package installer
+        run: npm run dist
+
+      - name: Verify packaged preload bridge
+        run: npm run test:packaged-preload
+
+      - name: Confirm installer artifact
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "release\ZX-Wallpaper-Setup-*.exe"
+          if ($installer.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installer.Count)."
+          }
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release/ZX-Wallpaper-Setup-*.exe
