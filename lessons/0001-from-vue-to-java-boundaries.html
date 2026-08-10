@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第一课：一个需求如何穿过全栈系统</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+  <main class="lesson">
+    <p class="eyebrow">LESSON 0001 · 8 MINUTES</p>
+    <h1>一个需求如何穿过全栈系统</h1>
+    <p class="lede">你不需要先学完 Java 才能理解全栈。先抓住一件事：每层都有它负责的决策，AI 生成的代码也必须服从这些边界。</p>
+
+    <h2>场景</h2>
+    <p>为壁纸应用增加“收藏壁纸”功能。用户点收藏，页面立即更新；服务端记录当前用户与壁纸的关系；重复收藏不能产生两条记录。</p>
+    <p class="flow">Vue button → POST /api/wallpapers/{id}/favorite → FavoriteService → FavoriteRepository → database</p>
+
+    <h2>每层要回答的问题</h2>
+    <p><strong>Vue</strong>：按钮何时可点？请求期间怎么显示？失败如何回滚或提示？</p>
+    <p><strong>Controller</strong>：这个 HTTP 请求是否合法？当前用户是谁？返回什么状态码和 JSON？</p>
+    <p><strong>Service</strong>：该用户是否能收藏？已经收藏时如何处理？这一步需要原子完成吗？</p>
+    <p><strong>Repository / database</strong>：如何读取和保存收藏关系？如何用唯一约束保证不重复？</p>
+
+    <p>这里的关键是：<strong>规则的最终裁决在服务端</strong>。前端校验为了体验，后端校验为了正确性和安全性。</p>
+
+    <section class="card" aria-labelledby="quiz-title">
+      <h2 id="quiz-title">检索练习</h2>
+      <p>“同一用户不能重复收藏同一壁纸”这条规则，最终应由哪一层保证？</p>
+      <div class="choices" data-answer="backend">
+        <button type="button" data-value="frontend">Vue 组件</button>
+        <button type="button" data-value="backend">服务端与数据库</button>
+        <button type="button" data-value="model">AI 模型</button>
+      </div>
+      <p class="feedback" aria-live="polite"></p>
+    </section>
+
+    <section class="card" aria-labelledby="practice-title">
+      <h2 id="practice-title">一分钟拆分</h2>
+      <p>不写代码，试着回答：若收藏请求失败，Vue 应做什么？Service 应做什么？数据库应做什么？用自己的话发给我，我会按边界给你反馈。</p>
+    </section>
+
+    <hr class="rule">
+    <p>下一节会把这条路径落实为一个最小 Spring Boot API：Controller、Service、Repository 各写什么，哪些东西暂时不写。</p>
+    <p>主资料：<a href="https://spring.io/guides/gs/rest-service/">Spring 官方 REST 服务指南</a>。需要澄清时，直接继续问我。</p>
+    <p>复习：<a href="../reference/0001-full-stack-boundaries.html">全栈边界速查</a></p>
+  </main>
+  <script>
+    document.querySelectorAll('.choices button').forEach((button) => {
+      button.addEventListener('click', () => {
+        const feedback = button.closest('.card').querySelector('.feedback');
+        const correct = button.dataset.value === 'backend';
+        feedback.textContent = correct
+          ? '正确。Vue 可以预防重复点击，但服务端和数据库必须保证数据正确。'
+          : '再想一次：客户端可以被绕过，AI 也不拥有业务事实。最终约束必须落在服务端与数据库。';
+        feedback.className = `feedback ${correct ? 'correct' : 'incorrect'}`;
+      });
+    });
+  </script>
+</body>
+</html>

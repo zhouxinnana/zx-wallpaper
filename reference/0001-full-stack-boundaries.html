@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>全栈边界速查</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+  <main class="sheet">
+    <p class="eyebrow">REFERENCE 0001</p>
+    <h1>全栈边界速查</h1>
+    <table>
+      <thead><tr><th>层</th><th>拥有的职责</th><th>不该拥有的职责</th></tr></thead>
+      <tbody>
+        <tr><td>Vue</td><td>交互、视图状态、调用 API、展示错误</td><td>业务规则的最终裁决、直接访问数据库</td></tr>
+        <tr><td>Controller</td><td>HTTP 输入输出、鉴权入口、调用用例</td><td>复杂业务编排、SQL 细节</td></tr>
+        <tr><td>Service / Use case</td><td>业务规则、事务边界、协调领域与外部能力</td><td>HTTP 细节、页面状态</td></tr>
+        <tr><td>Repository</td><td>持久化对象的读取与保存</td><td>业务决策、面向前端的 DTO 组装</td></tr>
+        <tr><td>Database</td><td>数据持久性、约束、查询执行</td><td>替代应用层的业务流程</td></tr>
+        <tr><td>AI capability</td><td>受控输入的生成、抽取、分类等能力</td><td>身份认证、权限裁决、唯一事实来源</td></tr>
+      </tbody>
+    </table>
+    <h2>请求路径</h2>
+    <p><code>Vue view -&gt; API client -&gt; Controller -&gt; Service -&gt; Repository -&gt; Database</code></p>
+    <p>响应沿相反方向返回。每一段边界都应有明确的数据结构和失败处理。</p>
+    <p class="source">来源：<a href="https://vuejs.org/guide/essentials/component-basics.html">Vue Guide</a>、<a href="https://spring.io/guides/gs/rest-service/">Spring REST Guide</a>、<a href="https://docs.spring.io/spring-data/jpa/reference/">Spring Data JPA Reference</a></p>
+  </main>
+</body>
+</html>

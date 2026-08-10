@@ -51,16 +51,16 @@ const acceptedMimeTypes = new Set([
 const maximumDownloadBytes = 30 * 1024 * 1024;
 const imageValidationCacheLimit = 4_096;
 const upx8Categories = [
-  { key: "nature", label: "风景" },
-  { key: "anime", label: "动漫" },
-  { key: "game", label: "游戏" },
-  { key: "animal", label: "动物" },
-  { key: "city", label: "城市" },
-  { key: "abstract", label: "抽象" },
-  { key: "space", label: "宇宙" },
-  { key: "car", label: "汽车" },
-  { key: "girl", label: "美女" },
-  { key: "sport", label: "运动" },
+  { key: "fengjing", label: "风景" },
+  { key: "dongman", label: "动漫" },
+  { key: "youxi", label: "游戏" },
+  { key: "dongwu", label: "动物" },
+  { key: "chengshi", label: "城市" },
+  { key: "chouxiang", label: "抽象" },
+  { key: "yuzhou", label: "宇宙" },
+  { key: "qiche", label: "汽车" },
+  { key: "meinv", label: "美女" },
+  { key: "yundong", label: "运动" },
 ] as const;
 const execFileAsync = promisify(execFile);
 protocol.registerSchemesAsPrivileged([

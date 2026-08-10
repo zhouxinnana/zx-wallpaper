@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>收藏 API 契约速查</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+  <main class="sheet">
+    <p class="eyebrow">REFERENCE 0002</p>
+    <h1>收藏 API 契约速查</h1>
+    <table>
+      <thead><tr><th>项目</th><th>定义</th></tr></thead>
+      <tbody>
+        <tr><td>请求</td><td><code>POST /api/wallpapers/{wallpaperId}/favorite</code></td></tr>
+        <tr><td>身份</td><td>由认证上下文取得当前 <code>userId</code>；不要信任客户端传来的 userId。</td></tr>
+        <tr><td>成功</td><td><code>201 Created</code>，返回新建收藏的标识或资源表示。</td></tr>
+        <tr><td>不存在</td><td><code>404 Not Found</code>，壁纸不存在时返回。</td></tr>
+        <tr><td>重复</td><td>先定义产品语义：可返回既有结果（幂等），或返回 <code>409 Conflict</code>。第一版必须选定一种并测试。</td></tr>
+        <tr><td>唯一性</td><td>数据库对 <code>(user_id, wallpaper_id)</code> 建唯一约束；Service 在该约束之上实现业务语义。</td></tr>
+      </tbody>
+    </table>
+    <p class="source">来源：<a href="https://spring.io/guides/gs/rest-service/">Spring REST 服务指南</a>、<a href="https://docs.spring.io/spring-data/jpa/reference/">Spring Data JPA Reference</a></p>
+  </main>
+</body>
+</html>

@@ -1,0 +1,31 @@
+     Running BeforeDevCommand (`npm run vite`)
+     Running DevCommand (`cargo  run --no-default-features --features desktop --color always --`)
+        Info Watching D:\code\zx-wallpaper\src-tauri for changes...
+[1m[92m   Compiling[0m zx-wallpaper v0.1.1 (D:\code\zx-wallpaper\src-tauri)
+[1m[96m    Building[0m [=======================> ] 472/474: zx-wall…[1m[96m    Building[0m [=======================> ] 473/474: zx-wall…                                                            [1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 26.83s
+[1m[92m     Running[0m `target\debug\zx-wallpaper.exe`
+        Info File src-tauri\src\runtime.rs changed. Rebuilding application...
+     Running DevCommand (`cargo  run --no-default-features --features desktop --color always --`)
+[1m[92m   Compiling[0m zx-wallpaper v0.1.1 (D:\code\zx-wallpaper\src-tauri)
+[1m[96m    Building[0m [=======================> ] 472/474: zx-wall…[1m[96m    Building[0m [=======================> ] 473/474: zx-wall…                                                            [1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 51.48s
+[1m[92m     Running[0m `target\debug\zx-wallpaper.exe`
+        Info File src-tauri\src\runtime.rs changed. Rebuilding application...
+     Running DevCommand (`cargo  run --no-default-features --features desktop --color always --`)
+[1m[92m   Compiling[0m zx-wallpaper v0.1.1 (D:\code\zx-wallpaper\src-tauri)
+[1m[96m    Building[0m [=======================> ] 472/474: zx-wall…                                                            [1m[91merror[E0308][0m[1m[97m: mismatched types[0m
+    [1m[96m--> [0msrc\runtime.rs:1582:26
+     [1m[96m|[0m
+[1m[96m1582[0m [1m[96m|[0m             preview_url: None,
+     [1m[96m|[0m                          [1m[91m^^^^[0m [1m[91mexpected `String`, found `Option<_>`[0m
+     [1m[96m|[0m
+     [1m[96m= [0m[1m[97mnote[0m: expected struct `std::[1m[35mstring::String[0m`
+                  found enum `std::[1m[35moption::Option<_>[0m`
+
+[1m[96m    Building[0m [=======================> ] 472/474: zx-wall…                                                            [1m[97mFor more information about this error, try `rustc --explain E0308`.[0m
+[1m[96m    Building[0m [=======================> ] 472/474: zx-wall…                                                            [1m[91merror[0m: could not compile `zx-wallpaper` (lib) due to 1 previous error
+        Info File src-tauri\src\runtime.rs changed. Rebuilding application...
+     Running DevCommand (`cargo  run --no-default-features --features desktop --color always --`)
+[1m[92m   Compiling[0m zx-wallpaper v0.1.1 (D:\code\zx-wallpaper\src-tauri)
+[1m[96m    Building[0m [=======================> ] 472/474: zx-wall…[1m[96m    Building[0m [=======================> ] 473/474: zx-wall…                                                            [1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 1m 05s
+[1m[92m     Running[0m `target\debug\zx-wallpaper.exe`
+[1m[91merror[0m: process didn't exit successfully: `target\debug\zx-wallpaper.exe` (exit code: 0xcfffffff)

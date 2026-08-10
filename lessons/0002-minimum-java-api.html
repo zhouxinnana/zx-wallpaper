@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第二课：最小收藏 API</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+  <main class="lesson">
+    <p class="eyebrow">LESSON 0002 · 10 MINUTES</p>
+    <h1>最小收藏 API：三层各做一件事</h1>
+    <p class="lede">目标不是记住 Spring 注解，而是让一条 HTTP 请求穿过正确的边界。先把接口和规则定清楚，AI 才能可靠地帮你补实现。</p>
+
+    <h2>先定契约</h2>
+    <p>用户点击收藏：</p>
+    <pre><code>POST /api/wallpapers/42/favorite
+
+201 Created
+{ "id": 7, "wallpaperId": 42 }</code></pre>
+    <p>这里刻意没有 <code>userId</code>：真实应用应从登录后的认证上下文取得当前用户，而不是让浏览器声明“我是谁”。</p>
+
+    <h2>再写调用骨架</h2>
+    <pre><code>@RestController
+@RequestMapping("/api/wallpapers")
+class FavoriteController {
+  private final FavoriteService favoriteService;
+
+  @PostMapping("/{wallpaperId}/favorite")
+  ResponseEntity&lt;FavoriteResponse&gt; favorite(
+      @PathVariable Long wallpaperId,
+      @AuthenticationPrincipal AppUser user) {
+    FavoriteResponse result = favoriteService.favorite(user.id(), wallpaperId);
+    return ResponseEntity.status(HttpStatus.CREATED).body(result);
+  }
+}</code></pre>
+    <p><strong>Controller</strong> 只处理 HTTP：路径参数、身份、状态码和响应。</p>
+    <pre><code>@Service
+class FavoriteService {
+  private final WallpaperRepository wallpapers;
+  private final FavoriteRepository favorites;
+
+  @Transactional
+  FavoriteResponse favorite(Long userId, Long wallpaperId) {
+    wallpapers.getByIdOrThrow(wallpaperId);
+    Favorite saved = favorites.save(new Favorite(userId, wallpaperId));
+    return FavoriteResponse.from(saved);
+  }
+}</code></pre>
+    <p><strong>Service</strong> 处理业务流程：壁纸是否存在、重复收藏的产品规则、以及操作是否作为一个事务完成。</p>
+    <pre><code>interface FavoriteRepository {
+  Favorite save(Favorite favorite);
+}</code></pre>
+    <p><strong>Repository</strong> 只表示持久化能力。实际项目中，唯一约束由数据库保证，Service 决定遇到重复时返回已有资源还是 <code>409 Conflict</code>。</p>
+
+    <p class="note">AI 的正确用法：让它按这个契约生成 DTO、实体和测试草稿；你负责检查它是否把 HTTP、业务规则和持久化细节混在同一个类里。</p>
+
+    <section class="card" aria-labelledby="quiz-title">
+      <h2 id="quiz-title">检索练习</h2>
+      <p>“壁纸不存在时不能创建收藏”这条判断首先应出现在哪里？</p>
+      <div class="choices">
+        <button type="button" data-value="controller">Controller 层</button>
+        <button type="button" data-value="service">Service 层</button>
+        <button type="button" data-value="repository">Repository 层</button>
+      </div>
+      <p class="feedback" aria-live="polite"></p>
+    </section>
+
+    <section class="card" aria-labelledby="practice-title">
+      <h2 id="practice-title">你的架构决定</h2>
+      <p>重复点击收藏时，你会选择哪种 API 语义：返回已有收藏，还是返回 <code>409 Conflict</code>？用一句话说明理由。没有唯一正确答案，但必须让前端和后端使用同一约定。</p>
+    </section>
+
+    <hr class="rule">
+    <p>主资料：<a href="https://spring.io/guides/gs/rest-service/">Spring 官方 REST 服务指南</a>。术语和状态码见 <a href="../reference/0002-favorite-api-contract.html">收藏 API 契约速查</a>。不清楚的注解或代码，直接问我。</p>
+  </main>
+  <script>
+    document.querySelectorAll('.choices button').forEach((button) => {
+      button.addEventListener('click', () => {
+        const feedback = button.closest('.card').querySelector('.feedback');
+        const correct = button.dataset.value === 'service';
+        feedback.textContent = correct
+          ? '正确。判断资源存在与否是业务流程的一部分；Controller 再把异常映射为 404。'
+          : '再想一次：Controller 负责 HTTP，Repository 负责存取；资源存在性属于 Service 编排的业务规则。';
+        feedback.className = `feedback ${correct ? 'correct' : 'incorrect'}`;
+      });
+    });
+  </script>
+</body>
+</html>
