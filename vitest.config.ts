@@ -5,7 +5,10 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: "happy-dom",
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    include: [
+      "src/**/*.test.ts",
+      "src/**/*.test.tsx",
+    ],
     pool: "threads",
   },
 });

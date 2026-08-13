@@ -4,7 +4,7 @@ Research date: 2026-07-28
 
 ## Scope and test method
 
-This note validates the domestic URLs proposed for ZX Wallpaper. Every result below came from a direct Node `fetch` request using the same certificate validation, redirect following, and normal HTTP behaviour used by Electron/Node. A page rendering in a browser, an insecure-TLS request, or a JSON catalog whose image host cannot be downloaded is **not** counted as an end-to-end success.
+This note validates the domestic URLs proposed for ZX Wallpaper. Every result below came from a direct Node `fetch` request using normal certificate validation and redirect following. A page rendering in a browser, an insecure-TLS request, or a JSON catalog whose image host cannot be downloaded is **not** counted as an end-to-end success.
 
 For each passing source, the probe fetched a real candidate image and read its image header to verify dimensions. Tests used a descriptive normal `User-Agent`; no login, CAPTCHA solving, certificate bypass, proxy, or access-control workaround was used.
 
@@ -20,7 +20,7 @@ Implement dedicated adapters, rather than the existing generic HTML image-tag pa
 | [Wallhaven clbug mirror](https://wallhaven.clbug.com/api/v1/search?purity=100&atleast=1920x1080&ratios=16x9&sorting=random) | Search JSON and the mirror-hosted full image both completed as `1920x1080` | Include, with image-host rewrite |
 | [Bing domestic mirror homepage](https://bing.ioliu.cn/) | Current homepage exposes three Bing image URLs that the packaged app downloaded as `1920x1080` | Include as a homepage-only static HTML source |
 
-The remaining entries do not meet the required no-login, Electron-compatible, download-verified bar today. Do not present them as built-in usable sources unless they are revalidated.
+The remaining entries do not meet the required no-login, download-verified bar today. Do not present them as built-in usable sources unless they are revalidated.
 
 ## Verified adapters
 
@@ -90,7 +90,7 @@ Do not add it: the required original is not available without login, and using t
 ### 轻壁纸（qinggongju.com）
 
 - Site: <https://bz.qinggongju.com/>
-- Direct Node/Electron-compatible HTTPS fetch fails before an HTTP response with `DEPTH_ZERO_SELF_SIGNED_CERT`.
+- Direct HTTPS fetch fails before an HTTP response with `DEPTH_ZERO_SELF_SIGNED_CERT`.
 
 Do not weaken TLS (`rejectUnauthorized: false`) to support a wallpaper source. It is not usable by ZX Wallpaper until the site serves a publicly trusted certificate.
 

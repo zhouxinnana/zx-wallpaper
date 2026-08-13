@@ -27,51 +27,14 @@ pub fn take_next_path(
     Some((next_path, next_remaining))
 }
 
-pub fn refresh_remaining_paths(
-    remaining: &[String],
-    candidates: &[String],
-    skipped: &[String],
-    current_path: Option<&str>,
-) -> Vec<String> {
-    let candidate_keys: HashSet<_> = candidates.iter().map(|path| path_key(path)).collect();
-    let skipped_keys: HashSet<_> = skipped.iter().map(|path| path_key(path)).collect();
-    let current_key = current_path.map(path_key);
-    let mut seen = HashSet::new();
-
-    remaining
-        .iter()
-        .chain(candidates)
-        .filter(|path| {
-            let key = path_key(path);
-            candidate_keys.contains(&key)
-                && !skipped_keys.contains(&key)
-                && current_key.as_deref() != Some(key.as_str())
-                && seen.insert(key)
-        })
-        .cloned()
-        .collect()
-}
-
 fn path_key(path: &str) -> String {
     path.replace('/', "\\").to_lowercase()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_supported_wallpaper, refresh_remaining_paths, take_next_path};
+    use super::{is_supported_wallpaper, take_next_path};
     use std::path::Path;
-
-    #[test]
-    fn refresh_discards_skipped_and_missing_paths_without_repeating_current_wallpaper() {
-        let refreshed = refresh_remaining_paths(
-            &["a.jpg".into(), "b.jpg".into(), "missing.jpg".into()],
-            &["a.jpg".into(), "b.jpg".into(), "c.jpg".into()],
-            &["b.jpg".into()],
-            Some("a.jpg"),
-        );
-
-        assert_eq!(refreshed, vec!["c.jpg"]);
-    }
 
     #[test]
     fn next_path_discards_skipped_and_current_entries_before_advancing_queue() {

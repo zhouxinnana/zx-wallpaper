@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
@@ -10,14 +9,12 @@ use reqwest::{
     redirect::Policy,
     Client, Response, Url,
 };
-use scraper::{Html, Selector};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use tokio::net::lookup_host;
 use uuid::Uuid;
 
 const MAX_REDIRECTS: usize = 5;
 const MAX_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
-const MAX_CANDIDATES: usize = 24;
 
 #[derive(Clone, Debug)]
 pub struct Candidate {
@@ -30,7 +27,9 @@ pub struct Candidate {
 #[derive(Clone, Debug)]
 pub struct CategoryResult {
     pub key: String,
-    pub label: String,
+    pub request_url: String,
+    pub response_status: Option<u16>,
+    pub response_image_urls: Vec<String>,
     pub discovered: usize,
     pub error: Option<String>,
 }
@@ -39,6 +38,14 @@ pub struct CategoryResult {
 pub struct SourceFetchResult {
     pub candidates: Vec<Candidate>,
     pub categories: Vec<CategoryResult>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Upx8CategoryFetch {
+    pub request_url: String,
+    pub response_status: u16,
+    pub image_urls: Vec<String>,
+    pub candidates: Vec<Candidate>,
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +58,43 @@ pub struct DownloadedImage {
     pub height: u32,
     pub mime_type: String,
     pub byte_length: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct DownloadFailure {
+    pub image_url: String,
+    pub resolved_url: Option<String>,
+    pub response_status: Option<u16>,
+    pub content_type: Option<String>,
+    pub reason: String,
+}
+
+impl DownloadFailure {
+    fn new(image_url: &str, reason: impl Into<String>) -> Self {
+        Self {
+            image_url: image_url.to_string(),
+            resolved_url: None,
+            response_status: None,
+            content_type: None,
+            reason: reason.into(),
+        }
+    }
+
+    fn from_response(
+        image_url: &str,
+        resolved_url: &Url,
+        response: &Response,
+        reason: impl Into<String>,
+    ) -> Self {
+        let content_type = response_content_type(response);
+        Self {
+            image_url: image_url.to_string(),
+            resolved_url: Some(resolved_url.to_string()),
+            response_status: Some(response.status().as_u16()),
+            content_type: (!content_type.is_empty()).then_some(content_type),
+            reason: reason.into(),
+        }
+    }
 }
 
 pub fn is_public_host(host: &str) -> bool {
@@ -118,176 +162,33 @@ async fn validate_public_url(value: &str, allow_upx8_cdn_http: bool) -> Result<U
     Ok(url)
 }
 
-pub async fn fetch_candidates(value: &str) -> Result<Vec<Candidate>, String> {
-    let requested = validate_public_https_url(value).await?;
-    let client = Client::builder()
-        .redirect(Policy::none())
-        .build()
-        .map_err(|error| format!("无法初始化网络请求: {error}"))?;
-    let (page_url, response) = request_with_checked_redirects(&client, requested, false).await?;
-    if !response.status().is_success() {
-        return Err(format!("来源请求失败 ({})。", response.status()));
-    }
-
-    let content_type = response_content_type(&response);
-    if content_type.starts_with("image/") {
-        return Ok(vec![Candidate {
-            image_url: page_url.to_string(),
-            source_page_url: page_url.to_string(),
-            category_key: None,
-            allow_upx8_cdn_http: false,
-        }]);
-    }
-    if !content_type.starts_with("text/html") {
-        return Err("来源必须是图片地址或包含图片的 HTML 页面。".to_string());
-    }
-
-    let html = response
-        .text()
-        .await
-        .map_err(|error| format!("无法读取来源页面: {error}"))?;
-    let selector = Selector::parse("img").map_err(|_| "无法解析来源页面。".to_string())?;
-    let document = Html::parse_document(&html);
-    let mut urls = HashSet::new();
-    let mut candidates = Vec::new();
-
-    for image in document.select(&selector) {
-        let source = image
-            .value()
-            .attr("srcset")
-            .and_then(|srcset| srcset.split(',').last())
-            .and_then(|entry| entry.split_whitespace().next())
-            .or_else(|| image.value().attr("src"));
-        let Some(source) = source else {
-            continue;
-        };
-        let Ok(image_url) = page_url.join(source) else {
-            continue;
-        };
-        if image_url.scheme() != "https"
-            || !is_public_host(image_url.host_str().unwrap_or_default())
-        {
-            continue;
-        }
-        let image_url = image_url.to_string();
-        if urls.insert(image_url.clone()) {
-            candidates.push(Candidate {
-                image_url,
-                source_page_url: page_url.to_string(),
-                category_key: None,
-                allow_upx8_cdn_http: false,
-            });
-        }
-        if candidates.len() >= MAX_CANDIDATES {
-            break;
-        }
-    }
-
-    if candidates.is_empty() {
-        return Err("来源页面中没有可下载的公开 HTTPS 图片。".to_string());
-    }
-    Ok(candidates)
-}
-
-pub async fn fetch_source_candidates(
-    source_id: &str,
-    value: &str,
-    minimum: u16,
-) -> Result<SourceFetchResult, String> {
-    if source_id == "upx8-4k" {
-        return fetch_upx8(value, minimum).await;
-    }
-    if source_id == "bing-cn-4k" {
-        return fetch_bing_archive(value).await;
-    }
-    Ok(SourceFetchResult {
-        candidates: fetch_candidates(value).await?,
-        categories: Vec::new(),
-    })
-}
-
-async fn fetch_bing_archive(value: &str) -> Result<SourceFetchResult, String> {
-    let requested = validate_public_https_url(value).await?;
-    let client = Client::builder()
-        .redirect(Policy::none())
-        .build()
-        .map_err(|error| format!("无法初始化网络请求: {error}"))?;
-    let (page_url, response) = request_with_checked_redirects(&client, requested, false).await?;
-    if !response.status().is_success() {
-        return Err(format!("必应请求失败 ({})。", response.status()));
-    }
-    let payload: serde_json::Value = serde_json::from_str(
-        &response
-            .text()
-            .await
-            .map_err(|error| format!("无法读取必应响应: {error}"))?,
-    )
-    .map_err(|error| format!("无法解析必应响应: {error}"))?;
-    let candidates = payload
-        .get("images")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|image| image.get("urlbase").and_then(|value| value.as_str()))
-        .map(|base| Candidate {
-            image_url: format!("https://cn.bing.com{base}_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp"),
-            source_page_url: page_url.to_string(),
-            category_key: None,
-            allow_upx8_cdn_http: false,
-        })
-        .collect();
-    Ok(SourceFetchResult {
-        candidates,
-        categories: Vec::new(),
-    })
-}
-
-const UPX8_CATEGORIES: [(&str, &str); 10] = [
-    ("fengjing", "风景"),
-    ("dongman", "动漫"),
-    ("youxi", "游戏"),
-    ("dongwu", "动物"),
-    ("chengshi", "城市"),
-    ("chouxiang", "抽象"),
-    ("yuzhou", "宇宙"),
-    ("qiche", "汽车"),
-    ("meinv", "美女"),
-    ("yundong", "运动"),
+pub const UPX8_CATEGORIES: [(&str, &str); 10] = [
+    ("nature", "风景"),
+    ("anime", "动漫"),
+    ("game", "游戏"),
+    ("animal", "动物"),
+    ("city", "城市"),
+    ("abstract", "抽象"),
+    ("space", "宇宙"),
+    ("car", "汽车"),
+    ("girl", "美女"),
+    ("sport", "运动"),
 ];
 
-async fn fetch_upx8(value: &str, minimum: u16) -> Result<SourceFetchResult, String> {
-    validate_public_https_url(value).await?;
-    let mut result = SourceFetchResult::default();
-    for (key, label) in UPX8_CATEGORIES {
-        match fetch_upx8_category(value, key, minimum).await {
-            Ok(candidates) => {
-                result.categories.push(CategoryResult {
-                    key: key.into(),
-                    label: label.into(),
-                    discovered: candidates.len(),
-                    error: None,
-                });
-                result.candidates.extend(candidates);
-            }
-            Err(error) => result.categories.push(CategoryResult {
-                key: key.into(),
-                label: label.into(),
-                discovered: 0,
-                error: Some(error),
-            }),
-        }
-    }
-    Ok(result)
+pub fn upx8_category_label(key: &str) -> Option<&'static str> {
+    UPX8_CATEGORIES
+        .iter()
+        .find_map(|(candidate, label)| (*candidate == key).then_some(*label))
 }
 
-async fn fetch_upx8_category(
-    value: &str,
-    key: &str,
-    minimum: u16,
-) -> Result<Vec<Candidate>, String> {
-    let mut url = validate_public_https_url(value).await?;
+pub fn upx8_request_url(value: &str, key: &str, minimum: u16) -> Result<Url, String> {
+    if upx8_category_label(key).is_none() {
+        return Err("UPX8 分类不存在。".to_string());
+    }
+    let mut url = Url::parse(value).map_err(|_| "来源地址不是有效的 URL。".to_string())?;
     {
         let mut query = url.query_pairs_mut();
+        query.clear();
         query.append_pair("format", "json");
         query.append_pair("category", key);
         query.append_pair(
@@ -300,6 +201,16 @@ async fn fetch_upx8_category(
         );
         query.append_pair("count", "10");
     }
+    Ok(url)
+}
+
+pub async fn fetch_upx8_category(
+    value: &str,
+    key: &str,
+    minimum: u16,
+) -> Result<Upx8CategoryFetch, String> {
+    let url = upx8_request_url(value, key, minimum)?;
+    let url = validate_public_https_url(url.as_str()).await?;
     let client = Client::builder()
         .redirect(Policy::none())
         .build()
@@ -308,6 +219,7 @@ async fn fetch_upx8_category(
     if !response.status().is_success() {
         return Err(format!("UPX8 请求失败 ({})。", response.status()));
     }
+    let response_status = response.status().as_u16();
     let payload: serde_json::Value = serde_json::from_str(
         &response
             .text()
@@ -324,7 +236,7 @@ async fn fetch_upx8_category(
                 .unwrap_or_else(|| vec![value.clone()])
         })
         .unwrap_or_default();
-    Ok(items
+    let image_urls: Vec<String> = items
         .into_iter()
         .filter_map(|item| {
             item.get("url")
@@ -332,64 +244,97 @@ async fn fetch_upx8_category(
                 .map(str::to_string)
         })
         .filter(|url| url.starts_with("https://") || is_upx8_cdn_url(url))
+        .collect();
+    let candidates = image_urls
+        .iter()
+        .cloned()
         .map(|image_url| Candidate {
             allow_upx8_cdn_http: is_upx8_cdn_url(&image_url),
             image_url,
             source_page_url: page_url.to_string(),
             category_key: Some(key.to_string()),
         })
-        .collect())
+        .collect();
+    Ok(Upx8CategoryFetch {
+        request_url: page_url.to_string(),
+        response_status,
+        image_urls,
+        candidates,
+    })
 }
 
 pub async fn download_candidate(
     candidate: Candidate,
     directory: &Path,
-    minimum_resolution: u16,
-) -> Result<DownloadedImage, String> {
+) -> Result<DownloadedImage, DownloadFailure> {
     let requested =
-        validate_public_download_url(&candidate.image_url, candidate.allow_upx8_cdn_http).await?;
+        validate_public_download_url(&candidate.image_url, candidate.allow_upx8_cdn_http)
+            .await
+            .map_err(|reason| DownloadFailure::new(&candidate.image_url, reason))?;
     let client = Client::builder()
         .redirect(Policy::none())
         .build()
-        .map_err(|error| format!("无法初始化图片下载: {error}"))?;
-    let (_, response) =
-        request_with_checked_redirects(&client, requested, candidate.allow_upx8_cdn_http).await?;
+        .map_err(|error| DownloadFailure::new(&candidate.image_url, format!("无法初始化图片下载: {error}")))?;
+    let (resolved_url, response) = request_with_checked_redirects(
+        &client,
+        requested,
+        candidate.allow_upx8_cdn_http,
+    )
+    .await
+    .map_err(|reason| DownloadFailure::new(&candidate.image_url, reason))?;
     if !response.status().is_success() {
-        return Err(format!("图片下载失败 ({})。", response.status()));
+        return Err(DownloadFailure::from_response(
+            &candidate.image_url,
+            &resolved_url,
+            &response,
+            format!("图片下载失败 ({})。", response.status()),
+        ));
     }
 
     let mime_type = response_content_type(&response);
-    if !mime_type.starts_with("image/") {
-        return Err("下载内容不是图片。".to_string());
-    }
+    let response_status = response.status().as_u16();
     if response
         .content_length()
         .is_some_and(|length| length > MAX_IMAGE_BYTES)
     {
-        return Err("图片超过 25 MB 下载限制。".to_string());
+        return Err(DownloadFailure::from_response(
+            &candidate.image_url,
+            &resolved_url,
+            &response,
+            "图片超过 25 MB 下载限制。",
+        ));
     }
     let bytes = response
         .bytes()
         .await
-        .map_err(|error| format!("无法读取图片内容: {error}"))?;
+        .map_err(|error| {
+            DownloadFailure::new(&candidate.image_url, format!("无法读取图片内容: {error}"))
+        })?;
     if bytes.len() as u64 > MAX_IMAGE_BYTES {
-        return Err("图片超过 25 MB 下载限制。".to_string());
+        return Err(DownloadFailure {
+            image_url: candidate.image_url.clone(),
+            resolved_url: Some(resolved_url.to_string()),
+            response_status: Some(response_status),
+            content_type: (!mime_type.is_empty()).then_some(mime_type.clone()),
+            reason: "图片超过 25 MB 下载限制。".to_string(),
+        });
     }
-    let decoded = image::load_from_memory(&bytes)
-        .map_err(|_| "下载内容不是受支持的图片格式。".to_string())?;
-    let (width, height) = decoded.dimensions();
-    if width.max(height) < u32::from(minimum_resolution) {
-        return Err(format!("图片分辨率低于 {minimum_resolution}px。"));
-    }
+    let (width, height) = decode_image_dimensions(&bytes).map_err(|_| DownloadFailure {
+        image_url: candidate.image_url.clone(),
+        resolved_url: Some(resolved_url.to_string()),
+        response_status: Some(response_status),
+        content_type: (!mime_type.is_empty()).then_some(mime_type.clone()),
+        reason: "响应内容无法解码为受支持的图片格式。".to_string(),
+    })?;
 
     tokio::fs::create_dir_all(directory)
         .await
-        .map_err(|error| format!("无法创建在线壁纸目录: {error}"))?;
+        .map_err(|error| DownloadFailure::new(&candidate.image_url, format!("无法创建在线壁纸目录: {error}")))?;
     let extension = extension_for_mime(&mime_type);
     let local_path = directory.join(format!("{}.{}", Uuid::new_v4(), extension));
     tokio::fs::write(&local_path, &bytes)
         .await
-        .map_err(|error| format!("无法保存下载的图片: {error}"))?;
+        .map_err(|error| DownloadFailure::new(&candidate.image_url, format!("无法保存下载的图片: {error}")))?;
 
     Ok(DownloadedImage {
         local_path,
@@ -401,6 +346,10 @@ pub async fn download_candidate(
         mime_type,
         byte_length: bytes.len() as u64,
     })
+}
+
+fn decode_image_dimensions(bytes: &[u8]) -> Result<(u32, u32), image::ImageError> {
+    Ok(image::load_from_memory(bytes)?.dimensions())
 }
 
 pub fn now_rfc3339() -> String {
@@ -450,7 +399,10 @@ fn is_upx8_cdn_url(value: &str) -> bool {
     };
 
     url.scheme() == "http"
-        && url.host_str() == Some("cdn-hsyq-static.shanhutech.cn")
+        && matches!(
+            url.host_str(),
+            Some("cdn-hsyq-static.shanhutech.cn") | Some("cdn-hsyq-static-bak.shanhutech.cn")
+        )
         && url.port_or_known_default() == Some(80)
         && url.path().starts_with("/bizhi/staticwp/")
         && url.username().is_empty()
@@ -496,7 +448,9 @@ fn is_public_ip(address: IpAddr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_public_host, is_upx8_cdn_url, UPX8_CATEGORIES};
+    use super::{
+        is_public_host, is_upx8_cdn_url, upx8_category_label, upx8_request_url, UPX8_CATEGORIES,
+    };
 
     #[test]
     fn rejects_loopback_and_private_ip_hosts() {
@@ -513,17 +467,29 @@ mod tests {
         assert_eq!(
             keys,
             vec![
-                "fengjing",
-                "dongman",
-                "youxi",
-                "dongwu",
-                "chengshi",
-                "chouxiang",
-                "yuzhou",
-                "qiche",
-                "meinv",
-                "yundong"
+                "nature",
+                "anime",
+                "game",
+                "animal",
+                "city",
+                "abstract",
+                "space",
+                "car",
+                "girl",
+                "sport"
             ]
+        );
+        assert_eq!(upx8_category_label("nature"), Some("风景"));
+        assert_eq!(upx8_category_label("sport"), Some("运动"));
+        assert_eq!(upx8_category_label("fengjing"), None);
+    }
+
+    #[test]
+    fn builds_documented_upx8_json_request_parameters() {
+        let url = upx8_request_url("https://wp.upx8.com/api.php", "nature", 3840).unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://wp.upx8.com/api.php?format=json&category=nature&resolution=3840x2160&count=10"
         );
     }
 
@@ -531,6 +497,9 @@ mod tests {
     fn accepts_only_the_known_upx8_http_image_cdn() {
         assert!(is_upx8_cdn_url(
             "http://cdn-hsyq-static.shanhutech.cn/bizhi/staticwp/2026/08/wallpaper.jpg"
+        ));
+        assert!(is_upx8_cdn_url(
+            "http://cdn-hsyq-static-bak.shanhutech.cn/bizhi/staticwp/2026/08/wallpaper.jpg"
         ));
         assert!(!is_upx8_cdn_url(
             "http://example.com/bizhi/staticwp/wallpaper.jpg"
@@ -544,5 +513,19 @@ mod tests {
         assert!(!is_upx8_cdn_url(
             "https://cdn-hsyq-static.shanhutech.cn/bizhi/staticwp/wallpaper.jpg"
         ));
+    }
+
+    #[test]
+    fn accepts_decodable_images_without_a_dimension_gate() {
+        let image = image::RgbImage::from_pixel(1, 1, image::Rgb([1, 2, 3]));
+        let mut bytes = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+
+        assert_eq!(super::decode_image_dimensions(&bytes).unwrap(), (1, 1));
     }
 }

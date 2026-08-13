@@ -6,16 +6,20 @@ const state: AppState = {
   folders: [],
   intervalMinutes: 30,
   displayMode: "fill",
+  rotationOrder: "random",
   autoStart: false,
   paused: false,
   followSystemTheme: true,
+  hideToTrayOnClose: true,
   currentPath: null,
   remainingPaths: [],
   skippedPaths: [],
+  favoritePaths: [],
   globalNextShortcut: null,
   lastSwitchAt: null,
   onlineSources: [],
   onlineImages: [],
+  onlineSyncLogs: [],
   onlineDirectory: null,
   onlineStorageLimitGb: 5,
   onlineMinimumResolution: 1920,
@@ -25,6 +29,7 @@ const state: AppState = {
   folderStatuses: {},
   onlineStorageBytes: 0,
   globalShortcutRegistered: false,
+  shortcutStatus: { state: "disabled" },
 };
 
 describe("Tauri runtime", () => {
@@ -36,13 +41,14 @@ describe("Tauri runtime", () => {
     expect(invoke).toHaveBeenCalledWith("get_state");
   });
 
-  it("sends thumbnail warm requests without waiting for image data", async () => {
+  it("sends image asset warm requests without waiting for image data", async () => {
     const invoke = vi.fn().mockResolvedValue(undefined);
     const runtime = createTauriRuntime({ invoke, listen: vi.fn() });
 
-    await expect(runtime.prewarmOnlineThumbnails(["image-01", "image-02"])).resolves.toBeUndefined();
-    expect(invoke).toHaveBeenCalledWith("prewarm_online_thumbnails", {
-      imageIds: ["image-01", "image-02"],
+    await expect(runtime.prewarmImageAssets(["D:\\Wallpapers\\one.jpg", "D:\\Wallpapers\\two.jpg"], "grid")).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledWith("prewarm_image_assets", {
+      filePaths: ["D:\\Wallpapers\\one.jpg", "D:\\Wallpapers\\two.jpg"],
+      kind: "grid",
     });
   });
 
@@ -56,14 +62,24 @@ describe("Tauri runtime", () => {
     });
   });
 
-  it("forwards preview thumbnail requests", async () => {
-    const invoke = vi.fn().mockResolvedValue("data:image/jpeg;base64,thumbnail");
+  it("forwards image asset requests with their display kind", async () => {
+    const asset = { src: "http://wallpaper-asset.localhost/example", width: 768, height: 432, status: "ready" as const };
+    const invoke = vi.fn().mockResolvedValue(asset);
     const runtime = createTauriRuntime({ invoke, listen: vi.fn() });
 
-    await expect(runtime.getPreviewThumbnail("D:\\Wallpapers\\next.jpg")).resolves.toBe(
-      "data:image/jpeg;base64,thumbnail",
-    );
-    expect(invoke).toHaveBeenCalledWith("get_preview_thumbnail", {
+    await expect(runtime.getImageAsset("D:\\Wallpapers\\next.jpg", "hero")).resolves.toEqual(asset);
+    expect(invoke).toHaveBeenCalledWith("get_image_asset", {
+      filePath: "D:\\Wallpapers\\next.jpg",
+      kind: "hero",
+    });
+  });
+
+  it("forwards favorite toggles by image path", async () => {
+    const invoke = vi.fn().mockResolvedValue(state);
+    const runtime = createTauriRuntime({ invoke, listen: vi.fn() });
+
+    await expect(runtime.toggleFavorite("D:\\Wallpapers\\next.jpg")).resolves.toEqual(state);
+    expect(invoke).toHaveBeenCalledWith("toggle_favorite", {
       filePath: "D:\\Wallpapers\\next.jpg",
     });
   });

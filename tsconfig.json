@@ -19,9 +19,6 @@
   },
   "include": [
     "src",
-    "electron",
-    "vite.config.ts",
-    "vite.main.config.ts",
-    "vite.preload.config.ts"
+    "vite.config.ts"
   ]
 }

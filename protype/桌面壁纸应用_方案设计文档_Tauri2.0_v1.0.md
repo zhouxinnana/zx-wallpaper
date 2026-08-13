@@ -5,7 +5,7 @@
 | 文档版本 | v1.1，2026-08-04 |
 | 目标平台 | Windows 10 1803+、Windows 11；WebView2 是运行前置条件 |
 | 目标技术栈 | Tauri 2.0 + Rust + React 19 + Vite + TypeScript + WebView2 |
-| 前端迁移 | 保留现有 React/Vite/CSS/视觉资产，替换 Electron preload bridge 为 Tauri Command/Event facade |
+| 前端运行时 | React/Vite/CSS 通过 Tauri Command/Event facade 访问桌面能力 |
 | 首发在线范围 | 完整迁移内置来源、自定义 HTTPS 单页来源、定时抓取、UPX8 分类轮询、受管目录、下载与安全校验 |
 | AI 模型 | 不进入安装包；用户主动启用后按 manifest 下载、校验并缓存 |
 | DWM 系统美化 | 不进入首发；仅作为默认关闭、可完全回退的 Win11 实验能力 |
@@ -16,7 +16,7 @@
 
 ZX Wallpaper 是本地优先的 Windows 静态壁纸管理器。它管理本地壁纸目录和用户主动启用的在线来源，将所有可用图片纳入同一随机循环；用户能够明确切换、暂停、跳过和恢复壁纸。在线发现的联网、下载和元数据均留在本机，不引入账号、云同步、遥测或通用网页爬虫。
 
-迁移到 Tauri 的目标是替换 Electron/Node 的应用壳与主进程，获得 Rust 的系统能力和更小的基础运行时；它不是重写 React UI，也不是把 AI 3D、DWM 或音频特效塞入首发版本。
+Tauri 的目标是提供 Rust 系统能力和更小的基础运行时；它不是重写 React UI，也不是把 AI 3D、DWM 或音频特效塞入首发版本。
 
 ### 1.2 首个可发布版本的核心闭环
 
@@ -48,33 +48,33 @@ ZX Wallpaper 是本地优先的 Windows 静态壁纸管理器。它管理本地�
 
 标准 Windows 壁纸 API 只能设置静态位图；“WebGL 渲染成动态桌面”需要额外的 WorkerW/Progman 类桌面宿主研究，不能作为 Tauri Command 的普通延伸。首发版在静态壁纸与完整在线发现通过验收前，不启动这些模块的产品开发。
 
-## 2. 当前实现与 Electron -> Tauri 迁移评估
+## 2. 当前实现与 Tauri 架构评估
 
 ### 2.1 已有资产
 
-当前工程是 **React 19 + Vite + Electron 33**。`src/App.tsx` 和 CSS 已实现工作台、目录、在线来源、在线图片和已跳过图片等视图；`electron/preload.ts` 暴露 `window.zxWallpaper`；`electron/main.ts` 的 `WallpaperService` 集中持有配置、目录扫描、监听、随机循环、计时、跳过、来源抓取、下载、托盘、快捷键和 Windows 调用。
+当前工程是 **React 19 + Vite + Tauri 2 + Rust**。`src/App.tsx` 和 CSS 已实现工作台、目录、在线来源、在线图片和已跳过图片等视图；`src/runtime/tauri-runtime.ts` 通过 Tauri Command/Event facade 调用 `src-tauri/src/runtime.rs`，后者集中持有配置、目录扫描、监听、随机循环、计时、跳过、来源抓取、下载、托盘、快捷键和 Windows 调用。
 
 以下资产应复用而非重写：
 
 - React 组件结构、路由/视图切换、样式、文案、Lucide 图标和现有视觉设计令牌。
 - 领域定义和行为测试：壁纸目录、受管在线目录、随机循环、跳过图片、来源状态、下载规则。
-- JSON 配置字段与旧设置迁移样本。
+- JSON 配置字段与状态恢复样本。
 - 内置来源协议、UPX8 分类清单、SSRF 拒绝规则和打包/验收脚本的测试意图。
 
-### 2.2 迁移范围与难度
+### 2.2 实现范围与难度
 
-| 区域 | 现有实现 | Tauri 目标 | 难度 | 迁移结论 |
+| 区域 | Tauri 实现 | 目标 | 难度 | 结论 |
 | --- | --- | --- | --- | --- |
-| React UI | React 19/Vite，业务通过桥接访问 | 原组件和 CSS 保留；只替换 bridge facade 与状态订阅 | 中 | 高复用 |
-| IPC | 25 个 Electron invoke 通道及状态推送 | 少量 Tauri Command + 一个状态事件；前端只依赖 facade | 中 | 重建接口，不逐通道照抄 |
-| 配置与迁移 | JSON、默认值、历史字段兼容 | `serde` JSON、原子写入、首启只复制导入旧配置 | 中 | 保持数据语义 |
-| 本地目录 | Node `fs` + `chokidar` + Electron dialog | `walkdir`、`notify`、`image`、Tauri dialog | 中 | 重建实现 |
+| React UI | React 19/Vite，业务通过 facade 访问 | 组件和 CSS 保持，状态由 Runtime 快照驱动 | 中 | 高复用 |
+| IPC | Tauri Command 与状态事件 | 前端只依赖 facade | 中 | 稳定接口 |
+| 配置 | `serde` JSON、默认值与原子写入 | 保持数据语义 | 中 | 已实现 |
+| 本地目录 | `walkdir`、`notify`、`image`、Tauri dialog | 目录扫描、监听与缩略图 | 中 | 已实现 |
 | 静态壁纸 | PowerShell + 注册表/Windows 样式 | Rust `windows` Adapter | 高 | 真机验证，不接受模拟成功 |
-| 在线发现 | Node fetch、DNS/私网防护、文件下载、来源适配 | Rust `reqwest`、URL/DNS 校验、来源 Adapter、受管库 | 高 | 完整迁移为首发范围 |
-| 托盘/快捷键/开机启动 | Electron 原生能力 | Tauri 官方插件 | 中 | 首发后的产品等价阶段 |
-| 3D/DWM/音频 | PRD 新能力，当前未实现 | 独立 POC 与功能开关 | 很高 | 不纳入迁移完成标准 |
+| 在线发现 | Rust `reqwest`、URL/DNS 校验、来源 Adapter、受管库 | 完整在线发现 | 高 | 首发范围 |
+| 托盘/快捷键/开机启动 | Tauri 官方插件 | 产品等价桌面能力 | 中 | 持续完善 |
+| 3D/DWM/音频 | PRD 新能力，当前未实现 | 独立 POC 与功能开关 | 很高 | 不纳入首发完成标准 |
 
-**总体判断**：保留 React 后，UI 迁移从高风险重写下降为中等适配工作；首发风险集中在 Windows 壁纸 Adapter 与完整在线抓取安全性。在线发现选择 C 使首发范围显著增大，但仍可通过“本地内核先稳定、在线模块后接入、统一发布验收”的方式控制风险。
+**总体判断**：React UI 与 Tauri facade 已形成清晰边界；首发风险集中在 Windows 壁纸 Adapter 与完整在线抓取安全性。在线发现选择 C 使首发范围显著增大，但仍可通过“本地内核先稳定、在线模块后接入、统一发布验收”的方式控制风险。
 
 ## 3. 目标架构与技术选型
 
@@ -112,7 +112,7 @@ src-tauri/src/
 │  ├─ filesystem.rs                   # 扫描、监听、缩略图和目录移动
 │  ├─ network.rs                      # URL/DNS/重定向校验及受限 HTTP Client
 │  └─ sources/                        # 内置来源和自定义单页来源 Adapter
-├─ persistence/                       # 设置、在线元数据、旧 Electron 导入、原子写入
+├─ persistence/                       # 设置、在线元数据与原子写入
 ├─ commands.rs                        # 薄 Command 转发层
 └─ lib.rs                             # Tauri 初始化、依赖装配、事件注册
 ```
@@ -150,7 +150,7 @@ get_thumbnail(image_id | skipped_path) -> DataUrl | null
 event: app://state-changed(AppState)
 ```
 
-`commands.rs` 只负责反序列化和调用 Runtime。所有状态更改通过一条内部路径执行：验证输入 -> 更新领域状态 -> 原子保存 -> 重置相关后台任务 -> 发送完整快照。React facade 使用 `@tauri-apps/api/core` 的 `invoke` 与事件订阅替代 Electron 的 `ipcRenderer`，从而让视图不感知平台变化。
+`commands.rs` 只负责反序列化和调用 Runtime。所有状态更改通过一条内部路径执行：验证输入 -> 更新领域状态 -> 原子保存 -> 重置相关后台任务 -> 发送完整快照。React facade 使用 `@tauri-apps/api/core` 的 `invoke` 与事件订阅，让视图不感知平台细节。
 
 ## 4. 核心领域和数据设计
 
@@ -194,11 +194,11 @@ SourceAdapter::discover(source, DownloadPolicy) -> DiscoveryReport
 8. 达到 1/5/10/20 GB 目录上限时停止新下载并保留已下载图片；绝不自动清理。删除来源仅停止抓取，不删除历史下载。
 9. UPX8 每轮依次请求风景、动漫、游戏、动物、城市、抽象、宇宙、汽车、美女、运动十个分类；每个分类失败独立记录，整轮完成后更新来源状态。
 
-### 4.5 配置与旧 Electron 导入
+### 4.5 配置持久化
 
-Tauri 保存 `%APPDATA%\\ZX Wallpaper\\settings.json`，使用 `schemaVersion` 和原子写入。首次启动时，如果新设置不存在，定位 Electron 用户数据目录的旧 `settings.json` 并执行一次**复制式导入**：旧文件永不删除；未知字段忽略；合法字段按原语义保留。
+Tauri 将状态保存到应用配置目录，使用 JSON 与原子写入。首次启动没有状态文件时使用默认配置；后续启动只读取和验证当前状态文件。
 
-首发必须迁移：目录、间隔、显示方式、暂停、当前路径、剩余队列、跳过路径、快捷键、在线来源、在线图片、在线目录、容量上限、最小分辨率和来源运行状态。导入后重新验证路径和图片存在性；可恢复的数据保留，不可访问路径以状态反馈，不静默删除用户记录。无法导入时使用默认配置并提供诊断信息。
+状态文件包含目录、间隔、显示方式、暂停、当前路径、剩余队列、跳过路径、快捷键、在线来源、在线图片、在线目录、容量上限、最小分辨率和来源运行状态。读取后重新验证路径和图片存在性；可恢复的数据保留，不可访问路径以状态反馈，不静默删除用户记录。无法读取时使用默认配置并提供诊断信息。
 
 ## 5. Windows 系统 Adapter
 
@@ -215,14 +215,14 @@ Implementation 负责验证图片、写入 Windows 样式相关设置并调用 `
 
 ## 6. 分步骤开发流程
 
-### 阶段 0：迁移基线和契约冻结
+### 阶段 0：运行时契约冻结
 
-**目标**：能对比 Electron 与 Tauri 行为，不改动 Electron 生产版本。
+**目标**：固定 Tauri Runtime 的行为契约与可重复验收信号。
 
-- 建立 Tauri 2 + React/Vite 工程，迁移现有 CSS、视图、图标和 TypeScript 数据类型。
-- 建立 `tauriRuntime` facade，先用内存 fake 满足现有 UI，不在视图内散落 `invoke` 调用。
-- 固化 Electron JSON 样本、正常/空/损坏目录、内置来源响应 fixture、重定向/私网 URL 测试集。
-- 验收：React 视图可用 fake Runtime 演示本地和在线所有状态；旧 Electron 仍可运行。
+- 固定 Tauri 2 + React/Vite 工程的 CSS、视图、图标和 TypeScript 数据类型。
+- 建立 `tauriRuntime` facade，用内存 fake 支持 UI 测试，不在视图内散落 `invoke` 调用。
+- 固化当前 JSON 状态样本、正常/空/损坏目录、内置来源响应 fixture、重定向/私网 URL 测试集。
+- 验收：React 视图可用 fake Runtime 演示本地和在线所有状态；Tauri 桌面端通过实际验证。
 
 ### 阶段 1A：本地静态壁纸内核
 
@@ -269,7 +269,7 @@ Implementation 负责验证图片、写入 Windows 样式相关设置并调用 `
 | React 测试 | `AppState` 投影、忙碌禁用、失败提示、无障碍 | 只 mock Runtime interface，不重写业务规则 |
 | Windows 集成测试 | 实际壁纸、显示样式、目录选择、受管目录迁移 | Win10/11 真机或 VM 都有记录 |
 | 网络安全测试 | DNS、重定向、私网、内容大小/类型、格式伪装 | 任意失败均不触达内网、不留下半成品文件 |
-| 发布回归 | 首启导入、升级、离线、24 小时计时/抓取 | Electron 数据可保留或有明确诊断 |
+| 发布回归 | 首启、升级、离线、24 小时计时/抓取 | 用户配置可保留或有明确诊断 |
 
 性能以基线设备的 P50/P95 实测记录：空闲、目录扫描、壁纸切换、在线抓取、下载、暂停和恢复。不要把“30–50MB”“GPU <3%”或“全屏 0%”写成所有设备的无条件承诺；静态首发与后置动态功能必须分别统计。
 
@@ -279,28 +279,28 @@ Implementation 负责验证图片、写入 Windows 样式相关设置并调用 `
 
 | 风险 | 影响 | 缓解与退出策略 |
 | --- | --- | --- |
-| Tauri bridge 改造导致 React 回归 | 中 | facade 兼容现有 `zxWallpaper` 语义；保留 Electron 作为对照直到首发验收 |
+| Tauri bridge 改造导致 React 回归 | 中 | facade 有集成测试与实际桌面验证 |
 | Win32 显示样式差异 | 高 | 只经 `WindowsWallpaperAdapter` 调用；Win10/11 真机矩阵；失败不覆盖当前有效配置 |
 | 完整在线来源过多 | 高 | 每个 Adapter 独立 fixture 和验收；一个来源阻塞不阻塞本地内核，但阻塞首发在线验收 |
 | 自定义来源 SSRF/重定向 | 很高 | HTTPS、DNS/IP 每跳校验、禁止私网与脚本执行、流式大小上限；出现绕过即停止发布 |
 | 目录监听遗漏/抖动 | 中 | 监听只触发去抖全量扫描；扫描是唯一事实来源 |
-| 配置迁移损坏数据 | 高 | 只复制不删除、版本化、原子写入、可导出诊断；保留 Electron 回退路径 |
+| 配置写入损坏数据 | 高 | 版本化、原子写入与可导出诊断 |
 | WebView2 缺失或过旧 | 中 | 安装/启动检查并引导官方 runtime；不假定用户系统已存在 |
 | 3D/DWM/音频拖累首发 | 很高 | 代码与排期隔离；首发分支不引入这些依赖和能力 |
 
 ## 9. 首发前检查清单
 
-1. React UI 已完全通过 Tauri facade 访问后端，项目中不再存在 Electron `contextBridge` 或 `ipcRenderer` 生产依赖。
-2. 旧 Electron 设置可只复制导入；本地目录、跳过路径、在线来源、在线元数据和受管目录语义保持。
+1. React UI 已完全通过 Tauri facade 访问后端，项目中不存在其他桌面运行时生产依赖。
+2. Tauri 状态文件保持本地目录、跳过路径、在线来源、在线元数据和受管目录语义。
 3. 本地闭环在无网络环境通过，在线闭环在用户主动启用后通过；默认启动没有网络请求。
 4. 所有内置来源、自定义来源和 UPX8 分类轮询均有成功、失败、超时和重启恢复测试。
 5. 每个下载路径完成 URL/DNS/重定向、大小、MIME、解码、临时文件清理和容量检查。
-6. Windows 10/11 上实际验证壁纸切换和显示样式；Tauri 安装、卸载和升级不破坏用户图片或旧 Electron 数据。
+6. Windows 10/11 上实际验证壁纸切换和显示样式；Tauri 安装、卸载和升级不破坏用户图片与应用配置。
 7. 只有 1–6 全部通过，才允许启动 AI、动态桌面、音频或 DWM POC。
 
 ## 10. 已确认的架构决策
 
-- **1A：保留 React**。不改写 UI 框架，复用现有视图、样式和用户流程；只在一个 facade seam 替换 Electron IPC。
+- **1A：保留 React**。不改写 UI 框架，复用现有视图、样式和用户流程；只通过一个 Tauri facade 访问系统能力。
 - **2A：模型按需下载**。静态壁纸和在线发现可完全离线运行；用户主动启用 AI 后才下载、校验与缓存模型。
 - **3A：DWM 后置**。系统任务栏美化不阻塞首发，未来仅作为默认关闭且可完全恢复的 Win11 实验能力。
 - **在线发现选择 C**。首发包含完整既有在线能力，但通过 1A/1B 的内部顺序实施；“本地先通过，再接线上”是开发顺序，不是缩减发布范围。

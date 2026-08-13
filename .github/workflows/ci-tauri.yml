@@ -1,0 +1,27 @@
+name: Tauri CI
+
+on:
+  push:
+    branches: [tauri_master]
+  pull_request:
+    branches: [tauri_master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test Tauri app
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run web:build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml

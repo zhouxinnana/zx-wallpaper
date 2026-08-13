@@ -9,7 +9,7 @@
 ## 1. 文档概述与产品定位
 
 ### 1.1 产品愿景
-基于 **Tauri 2.0** 架构打造一款极致轻量、高质感的 PC 桌面美学与互动枢纽。利用 Rust 底层高性能优势与 Windows 原生 WebView2 渲染引擎，摆脱 Electron 内存高昂的痛点。在不依赖复杂创作编辑器与高昂硬件开销的前提下，让用户现有的 2D 壁纸秒变立体 3D 视差壁纸，并与 Windows 系统界面产生一体化沉浸美学联动。
+基于 **Tauri 2.0** 架构打造一款极致轻量、高质感的 PC 桌面美学与互动枢纽。利用 Rust 底层高性能优势与 Windows 原生 WebView2 渲染引擎，在不依赖复杂创作编辑器与高昂硬件开销的前提下，让用户现有的 2D 壁纸秒变立体 3D 视差壁纸，并与 Windows 系统界面产生一体化沉浸美学联动。
 
 ### 1.2 核心竞争壁垒（差异化优势）
 1. **零门槛 2D 转 3D**：直接读取现有本地/在线 2D 壁纸，利用 Rust 调起 GPU 进行 AI 单目深度估算生成立体 3D 视差壁纸，打破传统 3D 壁纸的内容生态限制。
@@ -18,7 +18,7 @@
 4. **极致性能与内存控制**：依靠 Tauri 2.0 原生架构，应用后台静态**内存占用仅 30MB~50MB**；AI 预处理后由 WebGL Shader 高效渲染（GPU <3%），全屏应用/游戏下实现 0% 开销自动暂停。
 
 ### 1.3 技术栈架构说明
-* **前端 (UI & 渲染)**：HTML5 / CSS / Vue (复用原 Electron 前端资产) + WebGL 2.0 / WebGPU Shader (视差与律动渲染) + WebView2 引擎。
+* **前端 (UI & 渲染)**：HTML5 / CSS / React + WebGL 2.0 / WebGPU Shader (视差与律动渲染) + WebView2 引擎。
 * **后端 (System & AI Core)**：**Rust (Tauri 2.0 Core)**。
 * **AI 推理引擎**：Rust `ort` (ONNX Runtime 绑定) + DirectML（调用本地 GPU 高效加载 Depth Anything v2 预处理模型）。
 * **系统 API 与美化**：Rust `windows-rs` / `winapi`（深度挂钩 DWM、Shell Event Hooks、注册表及 Win32 API）。
@@ -122,13 +122,13 @@
 
 ---
 
-### 模块五：Electron 资产迁移与协同
+### 模块五：Tauri 前端与系统能力协同
 
-* **需求描述**：最大化复用原 Electron 项目的前端 UI 逻辑与接口代码。
-* **迁移策略**：
-  1. **UI 视图**：原 Electron 的 HTML/CSS/Vue 界面代码 **100% 移植**至 Tauri 的 `src-tauri/ui` 目录。
-  2. **主进程替换**：原 Node.js 主进程（文件读写、窗口管理）全部替换为 Tauri 2.0 命令（Rust `#[tauri::command]`）。
-  3. **IPC 协议重构**：将原 `ipcRenderer.invoke()` 替换为 Tauri 的 `import { invoke } from '@tauri-apps/api/core'`。
+* **需求描述**：前端通过稳定的 Tauri Command/Event facade 使用系统能力，视图不直接依赖平台细节。
+* **实现策略**：
+  1. **UI 视图**：React 组件、CSS 与 WebView2 渲染保持统一的交互与视觉规范。
+  2. **系统能力**：文件读写、窗口管理和壁纸控制通过 Rust `#[tauri::command]` 提供。
+  3. **状态同步**：前端使用 `@tauri-apps/api/core` 的 `invoke` 与事件订阅更新完整应用状态。
 
 ---
 
@@ -146,13 +146,13 @@
 
 ---
 
-## 5. Electron 到 Tauri 2.0 迁移路线图
+## 5. Tauri 2.0 实施路线图
 
 ```text
   ┌─────────────────────────────────────────────────────────────────┐
-  │                 第一步：前端 UI 与 业务逻辑移植                │
-  │ • 将原 Electron 前端 (Vue/HTML) 复制到 Tauri 2.0 项目           │
-  │ • 将 Node.js 文件/图库 API 替换为 Tauri `@tauri-apps/plugin-fs`│
+  │                 第一步：前端 UI 与业务逻辑完善                 │
+  │ • 以 React 组件、CSS 与 Tauri facade 完成桌面交互             │
+  │ • 通过 Rust Command 提供文件与图库系统能力                    │
   └─────────────────────────────────────────────────────────────────┘
                                    │
                                    ▼

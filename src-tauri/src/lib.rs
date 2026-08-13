@@ -1,5 +1,7 @@
 mod domain;
+mod image_assets;
 mod online;
+mod preferences;
 mod runtime;
 
 use tauri::{
@@ -11,6 +13,10 @@ use tauri::{
 #[cfg(feature = "desktop")]
 pub fn run() {
     tauri::Builder::default()
+        .register_uri_scheme_protocol(image_assets::PROTOCOL_NAME, |context, request| {
+            let state = context.app_handle().state::<runtime::RuntimeState>();
+            runtime::serve_image_asset(&state, request.uri().path())
+        })
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -32,8 +38,12 @@ pub fn run() {
         .on_window_event(|window, event| {
             if window.label() == "main" && matches!(event, WindowEvent::CloseRequested { .. }) {
                 if let WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = window.hide();
+                    if runtime::hide_to_tray_on_close(window.app_handle()) {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    } else {
+                        window.app_handle().exit(0);
+                    }
                 }
             }
         })
@@ -47,23 +57,22 @@ pub fn run() {
             runtime::next_wallpaper,
             runtime::select_wallpaper,
             runtime::skip_current_wallpaper,
+            runtime::toggle_favorite,
             runtime::restore_skipped,
             runtime::restore_all_skipped,
             runtime::delete_skipped,
             runtime::toggle_paused,
             runtime::update_preferences,
-            runtime::add_online_source,
             runtime::update_online_source,
-            runtime::remove_online_source,
             runtime::run_online_source,
+            runtime::run_upx8_category,
             runtime::set_online_image_as_wallpaper,
             runtime::delete_online_image,
             runtime::select_online_directory,
             runtime::reveal_online_image,
-            runtime::get_online_thumbnail,
-            runtime::get_preview_thumbnail,
-            runtime::prewarm_online_thumbnails,
-            runtime::get_skipped_thumbnail,
+            runtime::reveal_wallpaper,
+            runtime::get_image_asset,
+            runtime::prewarm_image_assets,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run ZX Wallpaper");

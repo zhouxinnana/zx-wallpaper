@@ -1,12 +1,11 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     fs,
-    io::Cursor,
     path::{Path, PathBuf},
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc, Mutex,
     },
     thread,
     time::{Duration as StdDuration, Instant},
@@ -23,29 +22,21 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 use crate::{
-    domain::{is_supported_wallpaper, refresh_remaining_paths, take_next_path},
+    domain::{is_supported_wallpaper, take_next_path},
+    image_assets::{ImageAsset, ImageAssetKind, ImageAssetManager},
     online,
+    preferences::{normalize_rotation_order, refresh_rotation_queue, RANDOM_ORDER},
 };
 
 const STATE_FILE_NAME: &str = "wallpaper-state.json";
 const DIRECTORY_RESCAN_DEBOUNCE: StdDuration = StdDuration::from_millis(500);
-const ONLINE_THUMBNAIL_MAX_WIDTH: u32 = 360;
-const ONLINE_THUMBNAIL_MAX_HEIGHT: u32 = 200;
-const ONLINE_THUMBNAIL_CACHE_CAPACITY: usize = 96;
-const CURRENT_PREVIEW_MAX_WIDTH: u32 = 960;
-const CURRENT_PREVIEW_MAX_HEIGHT: u32 = 540;
 const PREVIEW_STRIP_SIZE: usize = 5;
+const ONLINE_SYNC_LOG_CAPACITY: usize = 40;
 
 #[derive(Debug, PartialEq, Eq)]
 struct DirectoryWatchChanges {
     to_unwatch: Vec<PathBuf>,
     to_watch: Vec<PathBuf>,
-}
-
-#[derive(Default)]
-struct ThumbnailWarmQueue {
-    paths: VecDeque<PathBuf>,
-    active: bool,
 }
 
 #[derive(Clone)]
@@ -67,7 +58,6 @@ pub struct WallpaperFolder {
 pub struct OnlineSource {
     pub id: String,
     pub name: String,
-    pub kind: String,
     pub url: String,
     pub enabled: bool,
     pub interval_hours: u8,
@@ -104,6 +94,41 @@ pub struct OnlineImage {
     pub mime_type: String,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineSyncLog {
+    pub id: String,
+    pub source_id: String,
+    pub category_key: String,
+    pub category_label: String,
+    pub request_url: String,
+    pub format: String,
+    pub resolution: String,
+    pub count: u8,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub status: String,
+    pub response_status: Option<u16>,
+    pub discovered: usize,
+    pub downloaded: usize,
+    pub skipped: usize,
+    pub response_image_urls: Vec<String>,
+    pub errors: Vec<String>,
+    #[serde(default)]
+    pub download_failures: Vec<OnlineDownloadFailure>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineDownloadFailure {
+    pub image_url: String,
+    pub resolved_url: Option<String>,
+    pub response_status: Option<u16>,
+    pub content_type: Option<String>,
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -113,18 +138,24 @@ pub struct AppConfig {
     pub interval_minutes: u32,
     #[serde(default = "default_display_mode")]
     pub display_mode: String,
+    #[serde(default = "default_rotation_order")]
+    pub rotation_order: String,
     #[serde(default)]
     pub auto_start: bool,
     #[serde(default)]
     pub paused: bool,
     #[serde(default = "default_follow_system_theme")]
     pub follow_system_theme: bool,
+    #[serde(default = "default_hide_to_tray_on_close")]
+    pub hide_to_tray_on_close: bool,
     #[serde(default)]
     pub current_path: Option<String>,
     #[serde(default)]
     pub remaining_paths: Vec<String>,
     #[serde(default)]
     pub skipped_paths: Vec<String>,
+    #[serde(default)]
+    pub favorite_paths: Vec<String>,
     #[serde(default)]
     pub global_next_shortcut: Option<String>,
     #[serde(default)]
@@ -133,6 +164,8 @@ pub struct AppConfig {
     pub online_sources: Vec<OnlineSource>,
     #[serde(default)]
     pub online_images: Vec<OnlineImage>,
+    #[serde(default)]
+    pub online_sync_logs: Vec<OnlineSyncLog>,
     #[serde(default)]
     pub online_directory: Option<String>,
     #[serde(default = "default_storage_limit")]
@@ -147,16 +180,20 @@ impl Default for AppConfig {
             folders: Vec::new(),
             interval_minutes: default_interval_minutes(),
             display_mode: default_display_mode(),
+            rotation_order: default_rotation_order(),
             auto_start: false,
             paused: false,
             follow_system_theme: default_follow_system_theme(),
+            hide_to_tray_on_close: default_hide_to_tray_on_close(),
             current_path: None,
             remaining_paths: Vec::new(),
             skipped_paths: Vec::new(),
+            favorite_paths: Vec::new(),
             global_next_shortcut: None,
             last_switch_at: None,
             online_sources: built_in_sources(),
             online_images: Vec::new(),
+            online_sync_logs: Vec::new(),
             online_directory: None,
             online_storage_limit_gb: default_storage_limit(),
             online_minimum_resolution: default_minimum_resolution(),
@@ -184,6 +221,21 @@ pub struct AppState {
     folder_statuses: HashMap<String, FolderStatus>,
     online_storage_bytes: u64,
     global_shortcut_registered: bool,
+    shortcut_status: ShortcutStatus,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "state", rename_all = "lowercase")]
+pub enum ShortcutStatus {
+    Disabled,
+    Active { shortcut: String },
+    Error { shortcut: String, message: String },
+}
+
+impl Default for ShortcutStatus {
+    fn default() -> Self {
+        Self::Disabled
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -199,9 +251,11 @@ pub struct ConfigPatch {
     folders: Option<Vec<WallpaperFolder>>,
     interval_minutes: Option<u32>,
     display_mode: Option<String>,
+    rotation_order: Option<String>,
     auto_start: Option<bool>,
     paused: Option<bool>,
     follow_system_theme: Option<bool>,
+    hide_to_tray_on_close: Option<bool>,
     global_next_shortcut: Option<Option<String>>,
     online_directory: Option<Option<String>>,
     online_storage_limit_gb: Option<u8>,
@@ -212,8 +266,10 @@ pub struct RuntimeState {
     config: Mutex<AppConfig>,
     library_scan: Mutex<Option<LibraryScan>>,
     initial_scan_in_progress: AtomicBool,
-    thumbnail_cache: Mutex<HashMap<String, String>>,
-    thumbnail_warm_queue: Arc<Mutex<ThumbnailWarmQueue>>,
+    pub(crate) image_assets: ImageAssetManager,
+    shortcut_status: Mutex<ShortcutStatus>,
+    registered_shortcut: Mutex<Option<String>>,
+    upx8_next_request_at: Mutex<Instant>,
     state_file: PathBuf,
 }
 
@@ -230,41 +286,23 @@ impl RuntimeState {
         let mut config = match fs::read_to_string(&state_file) {
             Ok(contents) => serde_json::from_str(&contents)
                 .map_err(|error| format!("Unable to read saved wallpaper settings: {error}"))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let imported = legacy_settings_file()
-                    .and_then(|path| fs::read_to_string(path).ok())
-                    .and_then(|contents| parse_legacy_config(&contents).ok());
-                if let Some(config) = imported {
-                    persist(&state_file, &config)?;
-                    config
-                } else {
-                    AppConfig::default()
-                }
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => AppConfig::default(),
             Err(error) => return Err(format!("Unable to read saved wallpaper settings: {error}")),
         };
         config.online_sources = merge_online_sources(config.online_sources);
+        sort_online_images_by_downloaded_at(&mut config.online_images);
 
         Ok(Self {
             config: Mutex::new(config),
             library_scan: Mutex::new(None),
             initial_scan_in_progress: AtomicBool::new(false),
-            thumbnail_cache: Mutex::new(HashMap::new()),
-            thumbnail_warm_queue: Arc::new(Mutex::new(ThumbnailWarmQueue::default())),
+            image_assets: ImageAssetManager::new(directory.join("image-cache")),
+            shortcut_status: Mutex::new(ShortcutStatus::Disabled),
+            registered_shortcut: Mutex::new(None),
+            upx8_next_request_at: Mutex::new(Instant::now()),
             state_file,
         })
     }
-}
-
-fn legacy_settings_file() -> Option<PathBuf> {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .map(|directory| directory.join("ZX Wallpaper").join("settings.json"))
-}
-
-fn parse_legacy_config(contents: &str) -> Result<AppConfig, String> {
-    serde_json::from_str(contents)
-        .map_err(|error| format!("Unable to import Electron wallpaper settings: {error}"))
 }
 
 pub fn start_background_tasks(app: AppHandle) {
@@ -354,15 +392,30 @@ fn request_initial_scan(app: &AppHandle, state: &RuntimeState) {
         state
             .initial_scan_in_progress
             .store(false, Ordering::Release);
-        let snapshot = build_state_from_scan(config, scan);
+        let shortcut_status = shortcut_status(&state).unwrap_or_default();
+        let snapshot = build_state_from_scan(config, scan, shortcut_status);
         let _ = app.emit("app://state-changed", &snapshot);
     });
 }
 
 pub fn synchronize_system_integration(app: &AppHandle) -> Result<(), String> {
-    let config = lock_config(&app.state::<RuntimeState>())?.clone();
+    let state = app.state::<RuntimeState>();
+    let config = lock_config(&state)?.clone();
     synchronize_autostart(app, config.auto_start)?;
-    synchronize_global_shortcut(app, config.global_next_shortcut.as_deref())
+    let requested = config.global_next_shortcut.as_deref();
+    match replace_global_shortcut(app, None, requested) {
+        Ok((status, registered)) => {
+            *lock_shortcut_status(&state)? = status;
+            *lock_registered_shortcut(&state)? = registered;
+        }
+        Err(message) => {
+            *lock_shortcut_status(&state)? = ShortcutStatus::Error {
+                shortcut: requested.unwrap_or_default().to_string(),
+                message,
+            };
+        }
+    }
+    Ok(())
 }
 
 fn synchronize_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
@@ -398,13 +451,32 @@ fn autostart_action(enabled: bool, registered: bool) -> AutoStartAction {
     }
 }
 
-fn synchronize_global_shortcut(app: &AppHandle, shortcut: Option<&str>) -> Result<(), String> {
+fn replace_global_shortcut(
+    app: &AppHandle,
+    active_shortcut: Option<&str>,
+    requested_shortcut: Option<&str>,
+) -> Result<(ShortcutStatus, Option<String>), String> {
     let shortcuts = app.global_shortcut();
-    shortcuts
-        .unregister_all()
-        .map_err(|error| format!("无法更新全局快捷键: {error}"))?;
-    let Some(shortcut) = shortcut else {
-        return Ok(());
+    let requested_shortcut = requested_shortcut.map(str::trim).filter(|value| !value.is_empty());
+    if requested_shortcut == active_shortcut {
+        return Ok(match requested_shortcut {
+            Some(shortcut) => (
+                ShortcutStatus::Active {
+                    shortcut: shortcut.to_string(),
+                },
+                Some(shortcut.to_string()),
+            ),
+            None => (ShortcutStatus::Disabled, None),
+        });
+    }
+
+    let Some(shortcut) = requested_shortcut else {
+        if let Some(active_shortcut) = active_shortcut {
+            shortcuts
+                .unregister(active_shortcut)
+                .map_err(|error| format!("无法注销全局快捷键: {error}"))?;
+        }
+        return Ok((ShortcutStatus::Disabled, None));
     };
     shortcuts
         .on_shortcut(shortcut, |app, _, event| {
@@ -412,17 +484,37 @@ fn synchronize_global_shortcut(app: &AppHandle, shortcut: Option<&str>) -> Resul
                 trigger_next_wallpaper(app);
             }
         })
-        .map_err(|error| format!("无法注册全局快捷键: {error}"))
+        .map_err(|error| format!("无法注册全局快捷键: {error}"))?;
+    if let Some(active_shortcut) = active_shortcut {
+        if let Err(error) = shortcuts.unregister(active_shortcut) {
+            let _ = shortcuts.unregister(shortcut);
+            return Err(format!("无法替换旧全局快捷键: {error}"));
+        }
+    }
+    Ok((
+        ShortcutStatus::Active {
+            shortcut: shortcut.to_string(),
+        },
+        Some(shortcut.to_string()),
+    ))
+}
+
+pub fn hide_to_tray_on_close(app: &AppHandle) -> bool {
+    app.state::<RuntimeState>()
+        .config
+        .lock()
+        .map(|config| config.hide_to_tray_on_close)
+        .unwrap_or(true)
 }
 
 pub fn trigger_next_wallpaper(app: &AppHandle) {
     let state = app.state::<RuntimeState>();
-    let _ = mutate(app, &state, switch_to_next_wallpaper);
+    let _ = mutate_with_cached_scan(app, &state, switch_to_next_wallpaper);
 }
 
 pub fn toggle_paused_from_system(app: &AppHandle) {
     let state = app.state::<RuntimeState>();
-    let _ = mutate(app, &state, |config| {
+    let _ = mutate_without_rescan(app, &state, |config| {
         config.paused = !config.paused;
         Ok(())
     });
@@ -436,7 +528,7 @@ async fn run_due_tasks(app: &AppHandle, state: &RuntimeState) {
     };
 
     if should_switch {
-        let _ = mutate(app, state, |config| {
+        let _ = mutate_with_cached_scan(app, state, |config| {
             if is_switch_due(config, now) {
                 switch_to_next_wallpaper(config)
             } else {
@@ -446,40 +538,15 @@ async fn run_due_tasks(app: &AppHandle, state: &RuntimeState) {
     }
 
     for source_id in source_ids {
-        let _ = run_online_source_impl(app, state, source_id).await;
+        let _ = run_online_source_impl(app, state, source_id, None, false).await;
     }
 }
 
 fn built_in_sources() -> Vec<OnlineSource> {
-    [
-        (
-            "bing-cn-4k",
-            "必应每日壁纸 4K",
-            "https://cn.bing.com/HPImageArchive.aspx?format=js&idx=0&n=8&mkt=zh-CN",
-        ),
-        (
-            "ltyuanfang-scenery",
-            "远方风景 4K",
-            "https://tu.ltyuanfang.cn/api/fengjing.php",
-        ),
-        (
-            "upx8-4k",
-            "UPX8 综合壁纸 4K",
-            "https://wp.upx8.com/api.php?format=json",
-        ),
-        (
-            "wallhaven-clbug-sfw",
-            "Wallhaven SFW 国内镜像",
-            "https://wallhaven.clbug.com/api/v1/search?purity=100&sorting=random",
-        ),
-        ("bing-ioliu", "Bing 壁纸国内镜像", "https://bing.ioliu.cn/"),
-    ]
-    .into_iter()
-    .map(|(id, name, url)| OnlineSource {
-        id: id.to_string(),
-        name: name.to_string(),
-        kind: "builtin".to_string(),
-        url: url.to_string(),
+    vec![OnlineSource {
+        id: "upx8-4k".to_string(),
+        name: "UPX8 综合壁纸 4K".to_string(),
+        url: "https://wp.upx8.com/api.php".to_string(),
         enabled: false,
         interval_hours: 24,
         last_run_at: None,
@@ -487,9 +554,37 @@ fn built_in_sources() -> Vec<OnlineSource> {
         last_discovered: 0,
         last_downloaded: 0,
         last_error: None,
-        category_statuses: Vec::new(),
-    })
-    .collect()
+        category_statuses: default_upx8_category_statuses(),
+    }]
+}
+
+fn default_upx8_category_statuses() -> Vec<OnlineSourceCategoryStatus> {
+    online::UPX8_CATEGORIES
+        .iter()
+        .map(|(key, label)| OnlineSourceCategoryStatus {
+            key: (*key).to_string(),
+            label: (*label).to_string(),
+            discovered: 0,
+            downloaded: 0,
+            last_error: None,
+        })
+        .collect()
+}
+
+fn normalize_upx8_category_statuses(
+    statuses: &[OnlineSourceCategoryStatus],
+) -> Vec<OnlineSourceCategoryStatus> {
+    default_upx8_category_statuses()
+        .into_iter()
+        .map(|mut status| {
+            if let Some(saved) = statuses.iter().find(|saved| saved.key == status.key) {
+                status.discovered = saved.discovered;
+                status.downloaded = saved.downloaded;
+                status.last_error = saved.last_error.clone();
+            }
+            status
+        })
+        .collect()
 }
 
 fn merge_online_sources(saved: Vec<OnlineSource>) -> Vec<OnlineSource> {
@@ -497,7 +592,7 @@ fn merge_online_sources(saved: Vec<OnlineSource>) -> Vec<OnlineSource> {
         .iter()
         .map(|source| (source.id.as_str(), source))
         .collect();
-    let mut merged: Vec<_> = built_in_sources()
+    let merged: Vec<_> = built_in_sources()
         .into_iter()
         .map(|mut builtin| {
             if let Some(saved) = saved_by_id.remove(builtin.id.as_str()) {
@@ -511,12 +606,11 @@ fn merge_online_sources(saved: Vec<OnlineSource>) -> Vec<OnlineSource> {
                 builtin.last_discovered = saved.last_discovered;
                 builtin.last_downloaded = saved.last_downloaded;
                 builtin.last_error = saved.last_error.clone();
-                builtin.category_statuses = saved.category_statuses.clone();
+                builtin.category_statuses = normalize_upx8_category_statuses(&saved.category_statuses);
             }
             builtin
         })
         .collect();
-    merged.extend(saved.into_iter().filter(|source| source.kind == "custom"));
     merged
 }
 
@@ -527,7 +621,7 @@ pub fn get_state(app: AppHandle, state: State<'_, RuntimeState>) -> Result<AppSt
         request_initial_scan(&app, &state);
         initial_scan(&config)
     });
-    Ok(build_state_from_scan(config, scan))
+    Ok(build_state_from_scan(config, scan, shortcut_status(&state)?))
 }
 
 #[tauri::command]
@@ -626,6 +720,7 @@ pub async fn rescan_folders(
 ) -> Result<AppState, String> {
     let mut config = lock_config(&state)?.clone();
     prune_missing_online_images(&mut config);
+    prune_missing_favorite_paths(&mut config);
     let scan_config = config.clone();
     let scan = tauri::async_runtime::spawn_blocking(move || collect_candidates(&scan_config))
         .await
@@ -640,7 +735,7 @@ pub fn next_wallpaper(
     reason: Option<String>,
 ) -> Result<AppState, String> {
     let _ = reason;
-    mutate(&app, &state, |config| switch_to_next_wallpaper(config))
+    mutate_with_cached_scan(&app, &state, |config| switch_to_next_wallpaper(config))
 }
 
 #[tauri::command]
@@ -649,7 +744,9 @@ pub fn select_wallpaper(
     state: State<'_, RuntimeState>,
     file_path: String,
 ) -> Result<AppState, String> {
-    mutate(&app, &state, move |config| select_wallpaper_path(config, &file_path))
+    mutate_with_cached_scan(&app, &state, move |config| {
+        select_wallpaper_path(config, &file_path)
+    })
 }
 
 #[tauri::command]
@@ -657,7 +754,7 @@ pub fn skip_current_wallpaper(
     app: AppHandle,
     state: State<'_, RuntimeState>,
 ) -> Result<AppState, String> {
-    mutate(&app, &state, |config| {
+    mutate_with_cached_scan(&app, &state, |config| {
         let current = config
             .current_path
             .clone()
@@ -670,6 +767,17 @@ pub fn skip_current_wallpaper(
             config.skipped_paths.push(current);
         }
         switch_to_next_wallpaper(config)
+    })
+}
+
+#[tauri::command]
+pub fn toggle_favorite(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    file_path: String,
+) -> Result<AppState, String> {
+    mutate_without_rescan(&app, &state, move |config| {
+        toggle_favorite_path(config, &file_path)
     })
 }
 
@@ -706,9 +814,12 @@ pub fn delete_skipped(
     state: State<'_, RuntimeState>,
     file_path: String,
 ) -> Result<AppState, String> {
-    mutate(&app, &state, move |config| {
+    let delete_path = file_path.clone();
+    let snapshot = mutate(&app, &state, move |config| {
         delete_skipped_file(config, &file_path)
-    })
+    })?;
+    state.image_assets.purge_source(&delete_path);
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -723,15 +834,41 @@ pub fn toggle_paused(app: AppHandle, state: State<'_, RuntimeState>) -> Result<A
 pub fn update_preferences(
     app: AppHandle,
     state: State<'_, RuntimeState>,
-    patch: ConfigPatch,
+    mut patch: ConfigPatch,
 ) -> Result<AppState, String> {
     if let Some(auto_start) = patch.auto_start {
         synchronize_autostart(&app, auto_start)?;
     }
-    if let Some(global_next_shortcut) = patch.global_next_shortcut.as_ref() {
-        synchronize_global_shortcut(&app, global_next_shortcut.as_deref())?;
+    if patch.global_next_shortcut.is_some() {
+        let requested_shortcut = patch
+            .global_next_shortcut
+            .as_ref()
+            .and_then(|shortcut| shortcut.as_deref())
+            .map(str::trim)
+            .filter(|shortcut| !shortcut.is_empty())
+            .map(str::to_string);
+        let active_shortcut = lock_registered_shortcut(&state)?.clone();
+        match replace_global_shortcut(
+            &app,
+            active_shortcut.as_deref(),
+            requested_shortcut.as_deref(),
+        ) {
+            Ok((status, registered)) => {
+                *lock_shortcut_status(&state)? = status;
+                *lock_registered_shortcut(&state)? = registered;
+                patch.global_next_shortcut = Some(requested_shortcut);
+            }
+            Err(message) => {
+                *lock_shortcut_status(&state)? = ShortcutStatus::Error {
+                    shortcut: requested_shortcut.unwrap_or_default(),
+                    message,
+                };
+                patch.global_next_shortcut = None;
+            }
+        }
     }
-    mutate(&app, &state, move |config| {
+    let needs_library_rescan = patch.folders.is_some();
+    let apply_patch = move |config: &mut AppConfig| {
         if let Some(folders) = patch.folders {
             config.folders = folders;
         }
@@ -744,6 +881,10 @@ pub fn update_preferences(
                 set_desktop_wallpaper(Path::new(&current_path), &config.display_mode)?;
             }
         }
+        if let Some(rotation_order) = patch.rotation_order {
+            config.rotation_order = normalize_rotation_order(&rotation_order).to_string();
+            config.remaining_paths.clear();
+        }
         if let Some(auto_start) = patch.auto_start {
             config.auto_start = auto_start;
         }
@@ -752,6 +893,9 @@ pub fn update_preferences(
         }
         if let Some(follow_system_theme) = patch.follow_system_theme {
             config.follow_system_theme = follow_system_theme;
+        }
+        if let Some(hide_to_tray_on_close) = patch.hide_to_tray_on_close {
+            config.hide_to_tray_on_close = hide_to_tray_on_close;
         }
         if let Some(global_next_shortcut) = patch.global_next_shortcut {
             config.global_next_shortcut = global_next_shortcut;
@@ -765,40 +909,17 @@ pub fn update_preferences(
         if let Some(resolution) = patch.online_minimum_resolution {
             config.online_minimum_resolution = resolution;
         }
-        rescan_config(config);
         Ok(())
-    })
-}
-
-#[tauri::command]
-pub async fn add_online_source(
-    app: AppHandle,
-    state: State<'_, RuntimeState>,
-    url: String,
-) -> Result<AppState, String> {
-    let parsed = online::validate_public_https_url(&url).await?;
-    let hostname = parsed.host_str().unwrap_or("在线来源").to_string();
-
-    mutate_without_rescan(&app, &state, move |config| {
-        if config.online_sources.iter().any(|source| source.url == url) {
-            return Err("该在线来源已经存在。".to_string());
-        }
-        config.online_sources.push(OnlineSource {
-            id: Uuid::new_v4().to_string(),
-            name: hostname,
-            kind: "custom".to_string(),
-            url,
-            enabled: true,
-            interval_hours: 24,
-            last_run_at: None,
-            next_run_at: None,
-            last_discovered: 0,
-            last_downloaded: 0,
-            last_error: None,
-            category_statuses: Vec::new(),
-        });
-        Ok(())
-    })
+    };
+    if needs_library_rescan {
+        mutate(&app, &state, move |config| {
+            apply_patch(config)?;
+            rescan_config(config);
+            Ok(())
+        })
+    } else {
+        mutate_with_cached_scan(&app, &state, apply_patch)
+    }
 }
 
 #[tauri::command]
@@ -808,30 +929,19 @@ pub fn update_online_source(
     source: OnlineSource,
 ) -> Result<AppState, String> {
     mutate_without_rescan(&app, &state, move |config| {
+        if source.id != "upx8-4k" {
+            return Err("仅支持 UPX8 综合壁纸 4K 来源。".to_string());
+        }
         let saved = config
             .online_sources
             .iter_mut()
             .find(|saved| saved.id == source.id)
             .ok_or_else(|| "该在线来源已不存在。".to_string())?;
-        *saved = source;
-        Ok(())
-    })
-}
-
-#[tauri::command]
-pub fn remove_online_source(
-    app: AppHandle,
-    state: State<'_, RuntimeState>,
-    source_id: String,
-) -> Result<AppState, String> {
-    mutate_without_rescan(&app, &state, move |config| {
-        let count = config.online_sources.len();
-        config
-            .online_sources
-            .retain(|source| source.id != source_id);
-        if config.online_sources.len() == count {
-            return Err("该在线来源已不存在。".to_string());
-        }
+        saved.enabled = source.enabled;
+        saved.interval_hours = match source.interval_hours {
+            1 | 6 | 12 | 24 => source.interval_hours,
+            _ => 24,
+        };
         Ok(())
     })
 }
@@ -842,14 +952,31 @@ pub async fn run_online_source(
     state: State<'_, RuntimeState>,
     source_id: String,
 ) -> Result<AppState, String> {
-    run_online_source_impl(&app, &state, source_id).await
+    run_online_source_impl(&app, &state, source_id, None, true).await
+}
+
+#[tauri::command]
+pub async fn run_upx8_category(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    category_key: String,
+) -> Result<AppState, String> {
+    if online::upx8_category_label(&category_key).is_none() {
+        return Err("UPX8 分类不存在。".to_string());
+    }
+    run_online_source_impl(&app, &state, "upx8-4k".to_string(), Some(category_key), true).await
 }
 
 async fn run_online_source_impl(
     app: &AppHandle,
     state: &RuntimeState,
     source_id: String,
+    category_key: Option<String>,
+    manual: bool,
 ) -> Result<AppState, String> {
+    if source_id != "upx8-4k" {
+        return Err("仅支持 UPX8 综合壁纸 4K 来源。".to_string());
+    }
     let (source, directory, minimum_resolution, storage_limit, known_urls, storage_bytes) = {
         let config = lock_config(state)?;
         let source = config
@@ -877,46 +1004,88 @@ async fn run_online_source_impl(
             online_storage_bytes(&config),
         )
     };
-    if !source.enabled {
+    if !source.enabled && !manual {
         return Err("该在线来源当前已禁用。".to_string());
     }
 
-    let fetched =
-        match online::fetch_source_candidates(&source.id, &source.url, minimum_resolution).await {
-            Ok(candidates) => candidates,
-            Err(error) => {
-                let message = error.clone();
-                let _ = mutate_without_rescan(app, state, move |config| {
-                    update_source_result(config, &source_id, 0, 0, Some(message));
-                    Ok(())
-                });
-                return Err(error);
-            }
-        };
+    let category_keys = category_key
+        .as_deref()
+        .map(|key| vec![key.to_string()])
+        .unwrap_or_else(|| {
+            online::UPX8_CATEGORIES
+                .iter()
+                .map(|(key, _)| (*key).to_string())
+                .collect()
+        });
+    let log_ids = start_online_sync_logs(
+        app,
+        state,
+        &source_id,
+        &source.url,
+        minimum_resolution,
+        &category_keys,
+    )?;
+    let started = Instant::now();
+    let fetched = match fetch_upx8_categories(
+        state,
+        &source.url,
+        minimum_resolution,
+        category_keys,
+    )
+    .await
+    {
+        Ok(fetched) => fetched,
+        Err(error) => {
+            let completed_at = online::now_rfc3339();
+            let elapsed = started.elapsed().as_millis() as u64;
+            let error_for_log = error.clone();
+            mutate_without_rescan(app, state, move |config| {
+                complete_online_sync_logs(
+                    config,
+                    &log_ids,
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    Some(&error_for_log),
+                    &completed_at,
+                    elapsed,
+                );
+                Ok(())
+            })?;
+            return Err(error);
+        }
+    };
 
     let candidates = fetched.candidates;
     let category_results = fetched.categories;
     let mut seen = known_urls;
     let mut downloaded = Vec::new();
-    let mut downloaded_categories = Vec::new();
+    let mut downloaded_by_category = HashMap::new();
+    let mut skipped_by_category = HashMap::new();
+    let mut download_errors: HashMap<String, Vec<online::DownloadFailure>> = HashMap::new();
     let mut downloaded_bytes = 0;
     for candidate in candidates.iter().cloned() {
+        let category_key = candidate.category_key.clone().unwrap_or_default();
         if seen.contains(&candidate.image_url) || storage_bytes + downloaded_bytes >= storage_limit
         {
+            *skipped_by_category.entry(category_key).or_insert(0) += 1;
             continue;
         }
-        let category_key = candidate.category_key.clone();
-        if let Ok(image) =
-            online::download_candidate(candidate, &directory, minimum_resolution).await
-        {
-            downloaded_bytes += image.byte_length;
-            seen.insert(image.image_url.clone());
-            downloaded.push(image);
-            downloaded_categories.push(category_key);
+        match online::download_candidate(candidate, &directory).await {
+            Ok(image) => {
+                downloaded_bytes += image.byte_length;
+                seen.insert(image.image_url.clone());
+                downloaded.push(image);
+                *downloaded_by_category.entry(category_key).or_insert(0) += 1;
+            }
+            Err(error) => download_errors.entry(category_key).or_default().push(error),
         }
     }
 
     let discovered = candidates.len();
+    let completed_at = online::now_rfc3339();
+    let elapsed = started.elapsed().as_millis() as u64;
     mutate_without_rescan(app, state, move |config| {
         let downloaded_count = downloaded.len();
         config
@@ -932,20 +1101,22 @@ async fn run_online_source_impl(
                 height: image.height,
                 mime_type: image.mime_type,
             }));
+        sort_online_images_by_downloaded_at(&mut config.online_images);
         if source_id == "upx8-4k" {
-            let mut statuses: Vec<OnlineSourceCategoryStatus> = category_results
-                .into_iter()
-                .map(|category| OnlineSourceCategoryStatus {
-                    key: category.key,
-                    label: category.label,
-                    discovered: category.discovered,
-                    downloaded: 0,
-                    last_error: category.error,
-                })
-                .collect();
-            for category in downloaded_categories.into_iter().flatten() {
-                if let Some(status) = statuses.iter_mut().find(|status| status.key == category) {
-                    status.downloaded += 1;
+            let mut statuses = config
+                .online_sources
+                .iter()
+                .find(|source| source.id == source_id)
+                .map(|source| normalize_upx8_category_statuses(&source.category_statuses))
+                .unwrap_or_else(default_upx8_category_statuses);
+            for category in &category_results {
+                if let Some(status) = statuses.iter_mut().find(|status| status.key == category.key) {
+                    status.discovered = category.discovered;
+                    status.downloaded = downloaded_by_category
+                        .get(&category.key)
+                        .copied()
+                        .unwrap_or_default();
+                    status.last_error = category.error.clone();
                 }
             }
             if let Some(source) = config
@@ -956,9 +1127,207 @@ async fn run_online_source_impl(
                 source.category_statuses = statuses;
             }
         }
+        complete_online_sync_logs(
+            config,
+            &log_ids,
+            &category_results,
+            &downloaded_by_category,
+            &skipped_by_category,
+            &download_errors,
+            None,
+            &completed_at,
+            elapsed,
+        );
         update_source_result(config, &source_id, discovered, downloaded_count, None);
         Ok(())
     })
+}
+
+fn start_online_sync_logs(
+    app: &AppHandle,
+    state: &RuntimeState,
+    source_id: &str,
+    source_url: &str,
+    minimum_resolution: u16,
+    category_keys: &[String],
+) -> Result<HashMap<String, String>, String> {
+    let started_at = online::now_rfc3339();
+    let resolution = upx8_resolution(minimum_resolution).to_string();
+    let log_ids: HashMap<String, String> = category_keys
+        .iter()
+        .cloned()
+        .map(|key| (key, Uuid::new_v4().to_string()))
+        .collect();
+    let entries: Vec<OnlineSyncLog> = category_keys
+        .iter()
+        .map(|key| OnlineSyncLog {
+            id: log_ids[key].clone(),
+            source_id: source_id.to_string(),
+            category_key: key.clone(),
+            category_label: online::upx8_category_label(key)
+                .unwrap_or(key.as_str())
+                .to_string(),
+            request_url: online::upx8_request_url(source_url, key, minimum_resolution)
+                .map(|url| url.to_string())
+                .unwrap_or_else(|_| source_url.to_string()),
+            format: "json".to_string(),
+            resolution: resolution.clone(),
+            count: 10,
+            started_at: started_at.clone(),
+            finished_at: None,
+            duration_ms: None,
+            status: "running".to_string(),
+            response_status: None,
+            discovered: 0,
+            downloaded: 0,
+            skipped: 0,
+            response_image_urls: Vec::new(),
+            errors: Vec::new(),
+            download_failures: Vec::new(),
+        })
+        .collect();
+    mutate_without_rescan(app, state, move |config| {
+        config.online_sync_logs.splice(0..0, entries);
+        config.online_sync_logs.truncate(ONLINE_SYNC_LOG_CAPACITY);
+        Ok(())
+    })?;
+    Ok(log_ids)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn complete_online_sync_logs(
+    config: &mut AppConfig,
+    log_ids: &HashMap<String, String>,
+    category_results: &[online::CategoryResult],
+    downloaded_by_category: &HashMap<String, usize>,
+    skipped_by_category: &HashMap<String, usize>,
+    download_errors: &HashMap<String, Vec<online::DownloadFailure>>,
+    terminal_error: Option<&str>,
+    completed_at: &str,
+    duration_ms: u64,
+) {
+    for (category_key, id) in log_ids {
+        let category = category_results
+            .iter()
+            .find(|category| category.key == *category_key);
+        let mut errors = category
+            .and_then(|category| category.error.clone())
+            .into_iter()
+            .collect::<Vec<_>>();
+        if let Some(download_errors) = download_errors.get(category_key) {
+            errors.extend(
+                download_errors
+                    .iter()
+                    .map(|failure| failure.reason.clone()),
+            );
+        }
+        if let Some(error) = terminal_error {
+            errors.push(error.to_string());
+        }
+        let status = if terminal_error.is_some() || category.and_then(|category| category.error.as_ref()).is_some() {
+            "failed"
+        } else if errors.is_empty() {
+            "success"
+        } else {
+            "partial"
+        };
+        if let Some(log) = config.online_sync_logs.iter_mut().find(|log| log.id == *id) {
+            log.finished_at = Some(completed_at.to_string());
+            log.duration_ms = Some(duration_ms);
+            log.status = status.to_string();
+            log.response_status = category.and_then(|category| category.response_status);
+            if let Some(category) = category {
+                log.request_url = category.request_url.clone();
+            }
+            log.discovered = category.map(|category| category.discovered).unwrap_or_default();
+            log.downloaded = downloaded_by_category
+                .get(category_key)
+                .copied()
+                .unwrap_or_default();
+            log.skipped = skipped_by_category.get(category_key).copied().unwrap_or_default();
+            log.response_image_urls = category
+                .map(|category| category.response_image_urls.clone())
+                .unwrap_or_default();
+            log.errors = errors;
+            log.download_failures = download_errors
+                .get(category_key)
+                .map(|failures| {
+                    failures
+                        .iter()
+                        .map(|failure| OnlineDownloadFailure {
+                            image_url: failure.image_url.clone(),
+                            resolved_url: failure.resolved_url.clone(),
+                            response_status: failure.response_status,
+                            content_type: failure.content_type.clone(),
+                            reason: failure.reason.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+    }
+}
+
+fn upx8_resolution(minimum_resolution: u16) -> &'static str {
+    match minimum_resolution {
+        3840 => "3840x2160",
+        2560 => "2560x1440",
+        _ => "1920x1080",
+    }
+}
+
+async fn fetch_upx8_categories(
+    state: &RuntimeState,
+    source_url: &str,
+    minimum_resolution: u16,
+    category_keys: Vec<String>,
+) -> Result<online::SourceFetchResult, String> {
+    let mut fetched = online::SourceFetchResult::default();
+    for key in category_keys {
+        online::upx8_category_label(&key).ok_or_else(|| "UPX8 分类不存在。".to_string())?;
+        wait_for_upx8_request_slot(state).await?;
+        match online::fetch_upx8_category(source_url, &key, minimum_resolution).await {
+            Ok(response) => {
+                fetched.categories.push(online::CategoryResult {
+                    key,
+                    request_url: response.request_url,
+                    response_status: Some(response.response_status),
+                    response_image_urls: response.image_urls,
+                    discovered: response.candidates.len(),
+                    error: None,
+                });
+                fetched.candidates.extend(response.candidates);
+            }
+            Err(error) => fetched.categories.push(online::CategoryResult {
+                request_url: online::upx8_request_url(source_url, &key, minimum_resolution)
+                    .map(|url| url.to_string())
+                    .unwrap_or_else(|_| source_url.to_string()),
+                key,
+                response_status: None,
+                response_image_urls: Vec::new(),
+                discovered: 0,
+                error: Some(error),
+            }),
+        }
+    }
+    Ok(fetched)
+}
+
+async fn wait_for_upx8_request_slot(state: &RuntimeState) -> Result<(), String> {
+    let wait = {
+        let mut next_request_at = state
+            .upx8_next_request_at
+            .lock()
+            .map_err(|_| "无法获取 UPX8 请求限速器。".to_string())?;
+        let now = Instant::now();
+        let scheduled_at = (*next_request_at).max(now);
+        *next_request_at = scheduled_at + StdDuration::from_secs(1);
+        scheduled_at.saturating_duration_since(now)
+    };
+    if !wait.is_zero() {
+        tokio::time::sleep(wait).await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1005,12 +1374,17 @@ pub async fn delete_online_image(
             .map(|image| image.local_path.clone())
             .ok_or_else(|| "该在线图片已不存在。".to_string())?
     };
-    tauri::async_runtime::spawn_blocking(move || fs::remove_file(path))
+    let path_to_delete = path.clone();
+    tauri::async_runtime::spawn_blocking(move || fs::remove_file(path_to_delete))
         .await
         .map_err(|error| format!("删除在线图片任务中断: {error}"))?
         .map_err(|error| format!("无法删除在线图片: {error}"))?;
+    state.image_assets.purge_source(&path);
     mutate_without_rescan(&app, &state, move |config| {
         config.online_images.retain(|image| image.id != image_id);
+        config
+            .favorite_paths
+            .retain(|favorite| !same_path(favorite, &path));
         Ok(())
     })
 }
@@ -1051,240 +1425,43 @@ pub fn reveal_online_image(state: State<'_, RuntimeState>, image_id: String) -> 
 }
 
 #[tauri::command]
-pub async fn get_online_thumbnail(
-    state: State<'_, RuntimeState>,
-    image_id: String,
-) -> Result<Option<String>, String> {
-    let image = lock_config(&state)?
-        .online_images
-        .iter()
-        .find(|image| image.id == image_id)
-        .cloned();
-    let Some(image) = image else {
-        return Ok(None);
-    };
-    if let Some(thumbnail) = lock_thumbnail_cache(&state)?
-        .get(&image.local_path)
-        .cloned()
-    {
-        return Ok(Some(thumbnail));
+pub fn reveal_wallpaper(file_path: String) -> Result<(), String> {
+    let path = Path::new(&file_path);
+    if !path.is_file() || !is_supported_wallpaper(path) {
+        return Err("该壁纸已不存在或格式不受支持。".to_string());
     }
-
-    let thumbnail_directory = thumbnail_cache_directory(&state);
-    let image_path = PathBuf::from(&image.local_path);
-    let bytes = tauri::async_runtime::spawn_blocking(move || {
-        load_or_create_thumbnail(&thumbnail_directory, &image_path)
-    })
-    .await
-    .map_err(|error| format!("Unable to prepare the online thumbnail: {error}"))?;
-    let Some(bytes) = bytes else {
-        return Ok(None);
-    };
-    let thumbnail = format!("data:image/jpeg;base64,{}", encode_base64(&bytes));
-    let mut cache = lock_thumbnail_cache(&state)?;
-    if cache.len() >= ONLINE_THUMBNAIL_CACHE_CAPACITY {
-        if let Some(path) = cache.keys().next().cloned() {
-            cache.remove(&path);
-        }
-    }
-    cache.insert(image.local_path, thumbnail.clone());
-    Ok(Some(thumbnail))
-}
-
-#[tauri::command]
-pub async fn get_preview_thumbnail(
-    state: State<'_, RuntimeState>,
-    file_path: String,
-) -> Result<Option<String>, String> {
-    let image_path = PathBuf::from(&file_path);
-    if !image_path.is_file() || !is_supported_wallpaper(&image_path) {
-        return Ok(None);
-    }
-    if let Some(thumbnail) = lock_thumbnail_cache(&state)?.get(&file_path).cloned() {
-        return Ok(Some(thumbnail));
-    }
-
-    let thumbnail_directory = thumbnail_cache_directory(&state);
-    let cache_key = file_path.clone();
-    let bytes = tauri::async_runtime::spawn_blocking(move || {
-        load_or_create_thumbnail(&thumbnail_directory, &image_path)
-    })
-    .await
-    .map_err(|error| format!("Unable to prepare the preview thumbnail: {error}"))?;
-    let Some(bytes) = bytes else {
-        return Ok(None);
-    };
-    let thumbnail = format!("data:image/jpeg;base64,{}", encode_base64(&bytes));
-    let mut cache = lock_thumbnail_cache(&state)?;
-    if cache.len() >= ONLINE_THUMBNAIL_CACHE_CAPACITY {
-        if let Some(path) = cache.keys().next().cloned() {
-            cache.remove(&path);
-        }
-    }
-    cache.insert(cache_key, thumbnail.clone());
-    Ok(Some(thumbnail))
-}
-
-#[tauri::command]
-pub fn prewarm_online_thumbnails(
-    state: State<'_, RuntimeState>,
-    image_ids: Vec<String>,
-) -> Result<(), String> {
-    if image_ids.is_empty() {
-        return Ok(());
-    }
-    let known_paths: HashMap<_, _> = lock_config(&state)?
-        .online_images
-        .iter()
-        .map(|image| (image.id.clone(), PathBuf::from(&image.local_path)))
-        .collect();
-    let paths = image_ids
-        .into_iter()
-        .filter_map(|image_id| known_paths.get(&image_id).cloned())
-        .collect::<Vec<_>>();
-    if paths.is_empty() {
-        return Ok(());
-    }
-
-    let queue = Arc::clone(&state.thumbnail_warm_queue);
-    let should_start = {
-        let mut pending = queue.lock().map_err(|_| {
-            "The wallpaper thumbnail warm queue is unavailable because another operation failed."
-                .to_string()
-        })?;
-        pending.paths.extend(paths);
-        if pending.active {
-            false
-        } else {
-            pending.active = true;
-            true
-        }
-    };
-    if !should_start {
-        return Ok(());
-    }
-
-    let thumbnail_directory = thumbnail_cache_directory(&state);
-    thread::spawn(move || run_thumbnail_warm_queue(queue, thumbnail_directory));
+    Command::new("explorer.exe")
+        .arg("/select,")
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("无法打开图片所在目录: {error}"))?;
     Ok(())
 }
 
 #[tauri::command]
-pub fn get_skipped_thumbnail(file_path: String) -> Result<Option<String>, String> {
-    Ok(image_data_url(
-        Path::new(&file_path),
-        mime_type_for_path(Path::new(&file_path)),
-    ))
+pub async fn get_image_asset(
+    state: State<'_, RuntimeState>,
+    file_path: String,
+    kind: ImageAssetKind,
+) -> Result<Option<ImageAsset>, String> {
+    state.image_assets.get(file_path, kind).await
 }
 
-fn image_data_url(path: &Path, mime_type: &str) -> Option<String> {
-    fs::read(path)
-        .ok()
-        .map(|bytes| format!("data:{mime_type};base64,{}", encode_base64(&bytes)))
+#[tauri::command]
+pub fn prewarm_image_assets(
+    state: State<'_, RuntimeState>,
+    file_paths: Vec<String>,
+    kind: ImageAssetKind,
+) -> Result<(), String> {
+    state.image_assets.prewarm(file_paths, kind);
+    Ok(())
 }
 
-fn thumbnail_jpeg_bytes(path: &Path) -> Option<Vec<u8>> {
-    jpeg_bytes(path, ONLINE_THUMBNAIL_MAX_WIDTH, ONLINE_THUMBNAIL_MAX_HEIGHT)
-}
-
-fn preview_image_data_url(path: &Path) -> Option<String> {
-    let bytes = jpeg_bytes(path, CURRENT_PREVIEW_MAX_WIDTH, CURRENT_PREVIEW_MAX_HEIGHT)?;
-    Some(format!("data:image/jpeg;base64,{}", encode_base64(&bytes)))
-}
-
-fn jpeg_bytes(path: &Path, max_width: u32, max_height: u32) -> Option<Vec<u8>> {
-    let image = image::open(path).ok()?.thumbnail(max_width, max_height);
-    let mut bytes = Cursor::new(Vec::new());
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 72)
-        .encode_image(&image)
-        .ok()?;
-    Some(bytes.into_inner())
-}
-
-fn thumbnail_cache_directory(state: &RuntimeState) -> PathBuf {
-    state
-        .state_file
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("thumbnail-cache")
-}
-
-fn load_or_create_thumbnail(cache_directory: &Path, original_path: &Path) -> Option<Vec<u8>> {
-    let cache_path = cache_directory.join(thumbnail_cache_file_name(original_path));
-    if let Ok(bytes) = fs::read(&cache_path) {
-        return Some(bytes);
-    }
-
-    let bytes = thumbnail_jpeg_bytes(original_path)?;
-    if fs::create_dir_all(cache_directory).is_ok() {
-        let _ = fs::write(cache_path, &bytes);
-    }
-    Some(bytes)
-}
-
-fn run_thumbnail_warm_queue(queue: Arc<Mutex<ThumbnailWarmQueue>>, cache_directory: PathBuf) {
-    loop {
-        let next_path = match queue.lock() {
-            Ok(mut pending) => match pending.paths.pop_front() {
-                Some(path) => Some(path),
-                None => {
-                    pending.active = false;
-                    None
-                }
-            },
-            Err(_) => None,
-        };
-        let Some(path) = next_path else {
-            return;
-        };
-        let _ = load_or_create_thumbnail(&cache_directory, &path);
-    }
-}
-
-fn thumbnail_cache_file_name(path: &Path) -> String {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in path.to_string_lossy().to_ascii_lowercase().bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}.jpg")
-}
-
-fn mime_type_for_path(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("png") => "image/png",
-        Some("webp") => "image/webp",
-        Some("bmp") => "image/bmp",
-        _ => "image/jpeg",
-    }
-}
-
-fn encode_base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let value = (u32::from(chunk[0]) << 16)
-            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*chunk.get(2).unwrap_or(&0));
-        encoded.push(TABLE[((value >> 18) & 63) as usize] as char);
-        encoded.push(TABLE[((value >> 12) & 63) as usize] as char);
-        encoded.push(if chunk.len() > 1 {
-            TABLE[((value >> 6) & 63) as usize] as char
-        } else {
-            '='
-        });
-        encoded.push(if chunk.len() > 2 {
-            TABLE[(value & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    encoded
+pub fn serve_image_asset(
+    state: &RuntimeState,
+    request_path: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    state.image_assets.serve(request_path)
 }
 
 fn mutate<F>(app: &AppHandle, state: &RuntimeState, operation: F) -> Result<AppState, String>
@@ -1301,20 +1478,43 @@ where
     commit_scanned_state(app, state, next_config, scan)
 }
 
+fn mutate_with_cached_scan<F>(
+    app: &AppHandle,
+    state: &RuntimeState,
+    operation: F,
+) -> Result<AppState, String>
+where
+    F: FnOnce(&mut AppConfig) -> Result<(), String>,
+{
+    let (mut next_config, scan) = {
+        let config = lock_config(state)?;
+        let mut next_config = config.clone();
+        let scan = lock_library_scan(state)?
+            .clone()
+            .unwrap_or_else(|| initial_scan(&next_config));
+        refresh_rotation_queue_for_config(&mut next_config, &scan.candidates);
+        (next_config, scan)
+    };
+    operation(&mut next_config)?;
+    commit_scanned_state(app, state, next_config, scan)
+}
+
 fn commit_scanned_state(
     app: &AppHandle,
     state: &RuntimeState,
     mut next_config: AppConfig,
     scan: LibraryScan,
 ) -> Result<AppState, String> {
-    next_config.remaining_paths = refresh_remaining_paths(
-        &next_config.remaining_paths,
-        &scan.candidates,
-        &next_config.skipped_paths,
-        next_config.current_path.as_deref(),
-    );
+    refresh_rotation_queue_for_config(&mut next_config, &scan.candidates);
+    let mut live_paths = scan.candidates.clone();
+    live_paths.extend(next_config.skipped_paths.iter().cloned());
+    live_paths.extend(next_config.favorite_paths.iter().cloned());
+    if let Some(current_path) = &next_config.current_path {
+        live_paths.push(current_path.clone());
+    }
+    state.image_assets.prune_sources(&live_paths);
     persist(&state.state_file, &next_config)?;
-    let snapshot = build_state_from_scan(next_config.clone(), scan.clone());
+    let snapshot = build_state_from_scan(next_config.clone(), scan.clone(), shortcut_status(state)?);
     *lock_library_scan(state)? = Some(scan);
     *lock_config(state)? = next_config;
     app.emit("app://state-changed", &snapshot)
@@ -1344,14 +1544,9 @@ where
         &previous_online_images,
         &next_config.online_images,
     );
-    next_config.remaining_paths = refresh_remaining_paths(
-        &next_config.remaining_paths,
-        &scan.candidates,
-        &next_config.skipped_paths,
-        next_config.current_path.as_deref(),
-    );
+    refresh_rotation_queue_for_config(&mut next_config, &scan.candidates);
     persist(&state.state_file, &next_config)?;
-    let snapshot = build_state_from_scan(next_config.clone(), scan.clone());
+    let snapshot = build_state_from_scan(next_config.clone(), scan.clone(), shortcut_status(state)?);
     *lock_library_scan(state)? = Some(scan);
     *lock_config(state)? = next_config;
     app.emit("app://state-changed", &snapshot)
@@ -1373,12 +1568,26 @@ fn lock_library_scan(
     })
 }
 
-fn lock_thumbnail_cache(
+fn lock_shortcut_status(
     state: &RuntimeState,
-) -> Result<std::sync::MutexGuard<'_, HashMap<String, String>>, String> {
-    state.thumbnail_cache.lock().map_err(|_| {
-        "The wallpaper thumbnail cache is unavailable because another operation failed.".to_string()
-    })
+) -> Result<std::sync::MutexGuard<'_, ShortcutStatus>, String> {
+    state
+        .shortcut_status
+        .lock()
+        .map_err(|_| "全局快捷键状态不可用。".to_string())
+}
+
+fn lock_registered_shortcut(
+    state: &RuntimeState,
+) -> Result<std::sync::MutexGuard<'_, Option<String>>, String> {
+    state
+        .registered_shortcut
+        .lock()
+        .map_err(|_| "全局快捷键注册状态不可用。".to_string())
+}
+
+fn shortcut_status(state: &RuntimeState) -> Result<ShortcutStatus, String> {
+    Ok(lock_shortcut_status(state)?.clone())
 }
 
 fn persist(path: &Path, config: &AppConfig) -> Result<(), String> {
@@ -1435,6 +1644,7 @@ fn migrate_online_directory(config: &mut AppConfig, directory: &Path) -> Result<
         replace_config_path(&mut config.current_path, source, target);
         replace_config_paths(&mut config.remaining_paths, source, target);
         replace_config_paths(&mut config.skipped_paths, source, target);
+        replace_config_paths(&mut config.favorite_paths, source, target);
     }
     config.online_directory = Some(directory.to_string_lossy().into_owned());
     rescan_config(config);
@@ -1479,6 +1689,20 @@ fn online_storage_bytes(config: &AppConfig) -> u64 {
         .filter_map(|image| fs::metadata(&image.local_path).ok())
         .map(|metadata| metadata.len())
         .sum()
+}
+
+fn sort_online_images_by_downloaded_at(images: &mut [OnlineImage]) {
+    images.sort_by(|left, right| {
+        let left_time = OffsetDateTime::parse(&left.downloaded_at, &Rfc3339).ok();
+        let right_time = OffsetDateTime::parse(&right.downloaded_at, &Rfc3339).ok();
+        match (left_time, right_time) {
+            (Some(left_time), Some(right_time)) => right_time.cmp(&left_time),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| left.id.cmp(&right.id))
+    });
 }
 
 fn update_source_result(
@@ -1532,25 +1756,30 @@ fn due_source_ids(config: &AppConfig, now: OffsetDateTime) -> Vec<String> {
 }
 
 fn build_state(config: AppConfig) -> AppState {
-    build_state_from_scan(config.clone(), collect_candidates(&config))
+    build_state_from_scan(
+        config.clone(),
+        collect_candidates(&config),
+        ShortcutStatus::Disabled,
+    )
 }
 
-fn build_state_from_scan(config: AppConfig, scan: LibraryScan) -> AppState {
+fn build_state_from_scan(
+    config: AppConfig,
+    scan: LibraryScan,
+    shortcut_status: ShortcutStatus,
+) -> AppState {
     let online_storage_bytes = online_storage_bytes(&config);
-    let preview_url = config
-        .current_path
-        .as_ref()
-        .and_then(|path| preview_image_data_url(Path::new(path)));
     let preview_items = build_preview_items(&config, &scan);
 
     AppState {
         config,
         available_count: scan.candidates.len(),
-        preview_url,
+        preview_url: None,
         preview_items,
         folder_statuses: scan.folder_statuses,
         online_storage_bytes,
-        global_shortcut_registered: false,
+        global_shortcut_registered: matches!(shortcut_status, ShortcutStatus::Active { .. }),
+        shortcut_status,
     }
 }
 
@@ -1585,10 +1814,16 @@ fn build_preview_items(config: &AppConfig, scan: &LibraryScan) -> Vec<PreviewIte
 }
 
 fn rescan_config(config: &mut AppConfig) {
+    prune_missing_favorite_paths(config);
     let scan = collect_candidates(config);
-    config.remaining_paths = refresh_remaining_paths(
+    refresh_rotation_queue_for_config(config, &scan.candidates);
+}
+
+fn refresh_rotation_queue_for_config(config: &mut AppConfig, candidates: &[String]) {
+    config.remaining_paths = refresh_rotation_queue(
+        &config.rotation_order,
         &config.remaining_paths,
-        &scan.candidates,
+        candidates,
         &config.skipped_paths,
         config.current_path.as_deref(),
     );
@@ -1660,6 +1895,13 @@ fn prune_missing_online_images(config: &mut AppConfig) {
     {
         config.current_path = None;
     }
+}
+
+fn prune_missing_favorite_paths(config: &mut AppConfig) {
+    config.favorite_paths.retain(|path| {
+        let path = Path::new(path);
+        path.is_file() && is_supported_wallpaper(path)
+    });
 }
 
 fn initial_scan(config: &AppConfig) -> LibraryScan {
@@ -1753,7 +1995,30 @@ fn delete_skipped_file(config: &mut AppConfig, file_path: &str) -> Result<(), St
     config
         .skipped_paths
         .retain(|path| !same_path(path, file_path));
+    config
+        .favorite_paths
+        .retain(|path| !same_path(path, file_path));
     rescan_config(config);
+    Ok(())
+}
+
+fn toggle_favorite_path(config: &mut AppConfig, file_path: &str) -> Result<(), String> {
+    let path = Path::new(file_path);
+    if !path.is_file() || !is_supported_wallpaper(path) {
+        return Err("该壁纸已不存在或格式不受支持。".to_string());
+    }
+
+    if config
+        .favorite_paths
+        .iter()
+        .any(|favorite| same_path(favorite, file_path))
+    {
+        config
+            .favorite_paths
+            .retain(|favorite| !same_path(favorite, file_path));
+    } else {
+        config.favorite_paths.push(file_path.to_string());
+    }
     Ok(())
 }
 
@@ -1770,7 +2035,6 @@ fn select_online_wallpaper(config: &mut AppConfig, image_id: &str) -> Result<Str
 }
 
 fn select_wallpaper_path(config: &mut AppConfig, file_path: &str) -> Result<(), String> {
-    rescan_config(config);
     if config
         .skipped_paths
         .iter()
@@ -1791,6 +2055,10 @@ fn select_wallpaper_path(config: &mut AppConfig, file_path: &str) -> Result<(), 
             .iter()
             .find(|path| same_path(path, file_path))
             .cloned()
+            .or_else(|| {
+                let path = Path::new(file_path);
+                (path.is_file() && is_supported_wallpaper(path)).then(|| file_path.to_string())
+            })
     }
     .ok_or_else(|| "该预览图片已不在可切换队列中。".to_string())?;
 
@@ -1812,7 +2080,6 @@ fn select_wallpaper_path(config: &mut AppConfig, file_path: &str) -> Result<(), 
 }
 
 fn switch_to_next_wallpaper(config: &mut AppConfig) -> Result<(), String> {
-    rescan_config(config);
     let Some((next_path, remaining_paths)) = take_next_path(
         &config.remaining_paths,
         &config.skipped_paths,
@@ -1854,7 +2121,7 @@ fn inspect_folders(folders: &[WallpaperFolder]) -> (HashMap<String, FolderStatus
                 .filter_map(Result::ok)
                 .filter(|entry| entry.file_type().is_file() && is_supported_wallpaper(entry.path()))
                 .filter_map(|entry| {
-                    if image::open(entry.path()).is_ok() {
+                    if image::image_dimensions(entry.path()).is_ok() {
                         Some(entry.path().to_string_lossy().into_owned())
                     } else {
                         invalid_count += 1;
@@ -1900,49 +2167,6 @@ fn same_path(left: &str, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn creates_a_bounded_jpeg_thumbnail_for_an_online_image() {
-        let path =
-            std::env::temp_dir().join(format!("zx-wallpaper-thumbnail-{}.png", Uuid::new_v4()));
-        let original = image::RgbImage::from_pixel(1200, 800, image::Rgb([32, 64, 128]));
-        original
-            .save_with_format(&path, image::ImageFormat::Png)
-            .unwrap();
-
-        let thumbnail = thumbnail_jpeg_bytes(&path).expect("expected JPEG thumbnail bytes");
-        let decoded =
-            image::load_from_memory(&thumbnail).expect("expected decodable JPEG thumbnail");
-
-        assert_eq!(
-            image::guess_format(&thumbnail).unwrap(),
-            image::ImageFormat::Jpeg
-        );
-        assert!(decoded.width() <= 360);
-        assert!(decoded.height() <= 200);
-
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn reads_a_saved_thumbnail_when_the_original_is_unavailable() {
-        let directory = std::env::temp_dir().join(format!("zx-wallpaper-cache-{}", Uuid::new_v4()));
-        let original_path = directory.join("original.png");
-        fs::create_dir_all(&directory).unwrap();
-        image::RgbImage::from_pixel(1200, 800, image::Rgb([32, 64, 128]))
-            .save_with_format(&original_path, image::ImageFormat::Png)
-            .unwrap();
-
-        let thumbnail = load_or_create_thumbnail(&directory.join("thumbnails"), &original_path)
-            .expect("expected thumbnail to be created");
-        fs::remove_file(&original_path).unwrap();
-
-        let cached = load_or_create_thumbnail(&directory.join("thumbnails"), &original_path)
-            .expect("expected thumbnail to be read from disk cache");
-
-        assert_eq!(cached, thumbnail);
-        let _ = fs::remove_dir_all(directory);
-    }
 
     #[test]
     fn excludes_corrupt_images_and_reports_the_scan_result() {
@@ -2036,7 +2260,7 @@ mod tests {
     }
 
     #[test]
-    fn merges_builtin_sources_without_losing_saved_preferences() {
+    fn retains_only_upx8_when_migrating_saved_sources() {
         let saved = OnlineSource {
             id: "upx8-4k".into(),
             enabled: true,
@@ -2044,8 +2268,13 @@ mod tests {
             last_downloaded: 3,
             ..OnlineSource::default()
         };
-        let sources = merge_online_sources(vec![saved]);
-        assert_eq!(sources.len(), 5);
+        let obsolete = OnlineSource {
+            id: "bing-cn-4k".into(),
+            enabled: true,
+            ..OnlineSource::default()
+        };
+        let sources = merge_online_sources(vec![saved, obsolete]);
+        assert_eq!(sources.len(), 1);
         let upx8 = sources
             .iter()
             .find(|source| source.id == "upx8-4k")
@@ -2071,6 +2300,47 @@ mod tests {
                 "D:\\Wallpapers\\local.jpg",
                 "D:\\ZX Wallpaper\\Online\\downloaded.jpg",
             ]
+        );
+    }
+
+    #[test]
+    fn orders_online_images_by_latest_download_with_a_stable_id_tiebreaker() {
+        let mut images = vec![
+            OnlineImage {
+                id: "same-time-b".into(),
+                downloaded_at: "2026-08-10T01:00:00Z".into(),
+                ..OnlineImage::default()
+            },
+            OnlineImage {
+                id: "old".into(),
+                downloaded_at: "2026-08-09T01:00:00Z".into(),
+                ..OnlineImage::default()
+            },
+            OnlineImage {
+                id: "same-time-a".into(),
+                downloaded_at: "2026-08-10T01:00:00Z".into(),
+                ..OnlineImage::default()
+            },
+            OnlineImage {
+                id: "invalid".into(),
+                downloaded_at: "not-a-timestamp".into(),
+                ..OnlineImage::default()
+            },
+            OnlineImage {
+                id: "new".into(),
+                downloaded_at: "2026-08-11T01:00:00Z".into(),
+                ..OnlineImage::default()
+            },
+        ];
+
+        sort_online_images_by_downloaded_at(&mut images);
+
+        assert_eq!(
+            images
+                .iter()
+                .map(|image| image.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["new", "same-time-a", "same-time-b", "old", "invalid"]
         );
     }
 
@@ -2109,6 +2379,51 @@ mod tests {
 
         assert!(config.online_images.is_empty());
         assert!(config.current_path.is_none());
+    }
+
+    #[test]
+    fn favorite_paths_are_deduplicated_and_toggle_by_normalized_path() {
+        let directory =
+            std::env::temp_dir().join(format!("zx-wallpaper-favorite-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("favorite.jpg");
+        fs::write(&path, b"wallpaper").unwrap();
+        let path = path.to_string_lossy().into_owned();
+        let mut config = AppConfig::default();
+
+        toggle_favorite_path(&mut config, &path).unwrap();
+        assert_eq!(config.favorite_paths, vec![path.clone()]);
+
+        config.favorite_paths[0] = path.replace('\\', "/");
+        toggle_favorite_path(&mut config, &path).unwrap();
+        assert!(config.favorite_paths.is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn refresh_prunes_missing_favorite_paths() {
+        let directory =
+            std::env::temp_dir().join(format!("zx-wallpaper-favorite-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let existing_path = directory.join("favorite.png");
+        fs::write(&existing_path, b"wallpaper").unwrap();
+        let missing_path = directory.join("missing.jpg");
+        let mut config = AppConfig {
+            favorite_paths: vec![
+                existing_path.to_string_lossy().into_owned(),
+                missing_path.to_string_lossy().into_owned(),
+            ],
+            ..AppConfig::default()
+        };
+
+        prune_missing_favorite_paths(&mut config);
+
+        assert_eq!(config.favorite_paths.len(), 1);
+        assert!(same_path(
+            &config.favorite_paths[0],
+            &existing_path.to_string_lossy()
+        ));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -2270,26 +2585,6 @@ mod tests {
     }
 
     #[test]
-    fn imports_supported_fields_from_an_electron_settings_copy() {
-        let config = parse_legacy_config(
-            r#"{
-              "folders": [{"id":"local","path":"D:\\Wallpapers","enabled":true}],
-              "intervalMinutes": 60,
-              "displayMode": "fit",
-              "paused": true,
-              "globalNextShortcut": "Ctrl+Alt+N"
-            }"#,
-        )
-        .unwrap();
-
-        assert_eq!(config.folders.len(), 1);
-        assert_eq!(config.interval_minutes, 60);
-        assert_eq!(config.display_mode, "fit");
-        assert!(config.paused);
-        assert_eq!(config.global_next_shortcut.as_deref(), Some("Ctrl+Alt+N"));
-    }
-
-    #[test]
     fn migrates_existing_online_images_when_the_managed_directory_changes() {
         let root = std::env::temp_dir().join(format!("zx-wallpaper-{}", Uuid::new_v4()));
         let old_directory = root.join("old");
@@ -2304,6 +2599,7 @@ mod tests {
                 local_path: old_path.to_string_lossy().into_owned(),
                 ..OnlineImage::default()
             }],
+            favorite_paths: vec![old_path.to_string_lossy().into_owned()],
             ..AppConfig::default()
         };
 
@@ -2316,6 +2612,10 @@ mod tests {
             config.online_images[0].local_path,
             migrated_path.to_string_lossy()
         );
+        assert!(same_path(
+            &config.favorite_paths[0],
+            &migrated_path.to_string_lossy()
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 }
@@ -2460,7 +2760,15 @@ fn default_display_mode() -> String {
     "fill".to_string()
 }
 
+fn default_rotation_order() -> String {
+    RANDOM_ORDER.to_string()
+}
+
 fn default_follow_system_theme() -> bool {
+    true
+}
+
+fn default_hide_to_tray_on_close() -> bool {
     true
 }
 

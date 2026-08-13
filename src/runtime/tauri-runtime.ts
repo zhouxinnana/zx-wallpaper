@@ -36,28 +36,24 @@ export function createTauriRuntime(bindings: TauriBindings): DesktopRuntime {
     rescanFolders: () => command("rescan_folders"),
     nextWallpaper: () => command("next_wallpaper", { reason: "manual" }),
     selectWallpaper: (filePath) => command("select_wallpaper", { filePath }),
-    getPreviewThumbnail: (filePath) => command("get_preview_thumbnail", { filePath }),
+    getImageAsset: (filePath, kind) => command("get_image_asset", { filePath, kind }),
+    prewarmImageAssets: (filePaths, kind) => command("prewarm_image_assets", { filePaths, kind }),
     skipCurrentWallpaper: () => command("skip_current_wallpaper"),
+    toggleFavorite: (filePath) => command("toggle_favorite", { filePath }),
     restoreSkippedPath: (filePath) =>
       command("restore_skipped", { filePath }),
     restoreAllSkipped: () => command("restore_all_skipped"),
     deleteSkippedPath: (filePath) => command("delete_skipped", { filePath }),
     togglePaused: () => command("toggle_paused"),
-    addOnlineSource: (url) => command("add_online_source", { url }),
     updateOnlineSource: (source) => command("update_online_source", { source }),
-    removeOnlineSource: (sourceId) => command("remove_online_source", { sourceId }),
     runOnlineSource: (sourceId) => command("run_online_source", { sourceId }),
+    runUpx8Category: (categoryKey) => command("run_upx8_category", { categoryKey }),
     setOnlineImageAsWallpaper: (imageId) =>
       command("set_online_image_as_wallpaper", { imageId }),
     deleteOnlineImage: (imageId) => command("delete_online_image", { imageId }),
     selectOnlineDirectory: () => command("select_online_directory"),
     revealOnlineImage: (imageId) => command("reveal_online_image", { imageId }),
-    getOnlineThumbnail: (imageId) =>
-      command("get_online_thumbnail", { imageId }),
-    prewarmOnlineThumbnails: (imageIds) =>
-      command("prewarm_online_thumbnails", { imageIds }),
-    getSkippedThumbnail: (filePath) =>
-      command("get_skipped_thumbnail", { filePath }),
+    revealWallpaper: (filePath) => command("reveal_wallpaper", { filePath }),
     onStateChanged: (listener) =>
       bindings.listen<AppState>("app://state-changed", ({ payload }) =>
         listener(payload),

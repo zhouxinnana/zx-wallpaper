@@ -21,6 +21,14 @@ describe("ZX Wallpaper application shell", () => {
     expect(screen.getByRole("heading", { name: "后置实验性功能" })).toBeTruthy();
   });
 
+  it("renders the initial state without waiting for the state-event subscription", async () => {
+    const runtime = createOnlineGalleryRuntime(0);
+    runtime.onStateChanged = () => new Promise<() => void>(() => {});
+    render(<App runtime={runtime} />);
+
+    expect(await screen.findByRole("button", { name: "工作台" })).toBeTruthy();
+  });
+
   it("updates the rendered runtime state when automatic switching is paused", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -44,19 +52,72 @@ describe("ZX Wallpaper application shell", () => {
     expect(selectWallpaper).toHaveBeenCalledWith("D:\\Wallpapers\\next.jpg");
   });
 
-  it("adds a custom online source through the runtime-backed form", async () => {
+  it("toggles the current wallpaper as liked", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const getState = runtime.getState;
+    runtime.getState = async () => ({
+      ...(await getState()),
+      currentPath: "D:\\Wallpapers\\current.jpg",
+    });
+    const toggleFavorite = vi.fn(() => runtime.getState());
+    runtime.toggleFavorite = toggleFavorite;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "喜欢 current.jpg" }));
+
+    expect(toggleFavorite).toHaveBeenCalledWith("D:\\Wallpapers\\current.jpg");
+  });
+
+  it("upgrades the current preview from a grid asset to a hero asset", async () => {
+    const runtime = createOnlineGalleryRuntime(0);
+    const getState = runtime.getState;
+    runtime.getState = async () => ({
+      ...(await getState()),
+      currentPath: "D:\\Wallpapers\\current.jpg",
+    });
+    runtime.getImageAsset = vi.fn((filePath, kind) => Promise.resolve({
+      src: `http://wallpaper-asset.localhost/${kind}-${filePath.split(/[/\\\\]/).pop()}`,
+      width: kind === "hero" ? 1600 : 768,
+      height: kind === "hero" ? 900 : 432,
+      status: "ready" as const,
+    }));
+    render(<App runtime={runtime} />);
+
+    await waitFor(() => {
+      expect((screen.getByAltText("当前壁纸预览") as HTMLImageElement).src).toContain(
+        "hero-current.jpg",
+      );
+    });
+    expect(runtime.getImageAsset).toHaveBeenCalledWith("D:\\Wallpapers\\current.jpg", "grid");
+    expect(runtime.getImageAsset).toHaveBeenCalledWith("D:\\Wallpapers\\current.jpg", "hero");
+  });
+
+  it("requests an original asset only after opening the image viewer", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const getState = runtime.getState;
+    runtime.getState = async () => ({ ...(await getState()), currentPath: "D:\\Wallpapers\\current.jpg" });
+    const getImageAsset = vi.fn(() => Promise.resolve({ src: "http://wallpaper-asset.localhost/image", width: 768, height: 432, status: "ready" as const }));
+    runtime.getImageAsset = getImageAsset;
+    render(<App runtime={runtime} />);
+
+    await screen.findByRole("button", { name: "查看原图 current.jpg" });
+    expect(getImageAsset).not.toHaveBeenCalledWith("D:\\Wallpapers\\current.jpg", "original");
+    await user.click(screen.getByRole("button", { name: "查看原图 current.jpg" }));
+
+    await waitFor(() => expect(getImageAsset).toHaveBeenCalledWith("D:\\Wallpapers\\current.jpg", "original"));
+  });
+
+  it("shows UPX8 as the only online wallpaper source", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await screen.findByRole("button", { name: "在线发现" });
     await user.click(screen.getByRole("button", { name: "在线发现" }));
-    await user.type(
-      screen.getByLabelText("自定义来源地址"),
-      "https://wallpapers.example.test/gallery",
-    );
-    await user.click(screen.getByRole("button", { name: "添加来源" }));
 
-    expect(await screen.findByText("wallpapers.example.test", { selector: "strong" })).toBeTruthy();
+    expect(await screen.findByText("UPX8 综合壁纸 4K", { selector: "strong" })).toBeTruthy();
+    expect(screen.queryByText("添加自定义 HTTPS 单页来源")).toBeNull();
   });
 
   it("updates an online source polling interval", async () => {
@@ -64,10 +125,99 @@ describe("ZX Wallpaper application shell", () => {
     render(<App />);
 
     await user.click(await screen.findByRole("button", { name: "在线发现" }));
-    const interval = screen.getByLabelText("抓取间隔 Wallhaven SFW");
+    const interval = screen.getByLabelText("抓取间隔 UPX8 综合壁纸 4K");
     await user.selectOptions(interval, "6");
 
     expect((interval as HTMLSelectElement).value).toBe("6");
+  });
+
+  it("persists the requested rotation order from settings", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const updateConfig = vi.fn(() => runtime.getState());
+    runtime.updateConfig = updateConfig;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "顺序" }));
+
+    expect(updateConfig).toHaveBeenCalledWith({ rotationOrder: "sequential" });
+  });
+
+  it("shows the concrete global shortcut registration error", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const getState = runtime.getState;
+    runtime.getState = async () => ({
+      ...(await getState()),
+      shortcutStatus: { state: "error", shortcut: "Ctrl+Alt+N", message: "该快捷键已被其他应用占用。" },
+    });
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "设置" }));
+
+    expect(screen.getByText("该快捷键已被其他应用占用。")).toBeTruthy();
+  });
+
+  it("syncs an individual UPX8 category", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const runUpx8Category = vi.fn(() => runtime.getState());
+    runtime.runUpx8Category = runUpx8Category;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+    await user.click(screen.getByRole("button", { name: "同步分类 风景" }));
+
+    expect(runUpx8Category).toHaveBeenCalledWith("nature");
+  });
+
+  it("shows the request parameters and returned URLs for an online sync", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const getState = runtime.getState;
+    runtime.getState = async () => ({
+      ...(await getState()),
+      onlineSyncLogs: [{
+        id: "sync-nature",
+        sourceId: "upx8-4k",
+        categoryKey: "nature",
+        categoryLabel: "风景",
+        requestUrl: "https://wp.upx8.com/api.php?format=json&category=nature&resolution=1920x1080&count=10",
+        format: "json",
+        resolution: "1920x1080",
+        count: 10,
+        startedAt: "2026-08-11T02:40:00Z",
+        finishedAt: "2026-08-11T02:40:01Z",
+        durationMs: 1000,
+        status: "success",
+        responseStatus: 200,
+        discovered: 1,
+        downloaded: 1,
+        skipped: 0,
+        responseImageUrls: ["https://cdn.example.test/nature.jpg"],
+        errors: ["响应 Content-Type 不是图片类型。"],
+        downloadFailures: [{
+          imageUrl: "https://cdn.example.test/not-an-image.jpg",
+          resolvedUrl: "https://cdn.example.test/not-an-image.jpg",
+          responseStatus: 200,
+          contentType: "text/html",
+          reason: "响应 Content-Type 不是图片类型。",
+        }],
+      }],
+    });
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+
+    expect(screen.queryByText("HTTP 200")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "查看风景同步详情" }));
+    expect(screen.getByText("HTTP 200")).toBeTruthy();
+    expect(screen.getByText("category=nature")).toBeTruthy();
+    expect(screen.getByText("https://cdn.example.test/not-an-image.jpg")).toBeTruthy();
+    expect(screen.getByText("HTTP 200 · Content-Type text/html")).toBeTruthy();
+    await user.click(screen.getByText("返回 URL (1)"));
+    expect(screen.getByText("https://cdn.example.test/nature.jpg")).toBeTruthy();
   });
 
   it("reports wallpaper progress and prevents a concurrent online-image action", async () => {
@@ -92,6 +242,46 @@ describe("ZX Wallpaper application shell", () => {
 
     finishWallpaperChange?.();
     expect((await screen.findByRole("status")).textContent).toContain("已设为壁纸，所有显示器已同步");
+  });
+
+  it("toggles an online wallpaper as liked", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(1);
+    const toggleFavorite = vi.fn(() => runtime.getState());
+    runtime.toggleFavorite = toggleFavorite;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+    await user.click(screen.getByRole("button", { name: "喜欢 online-01.jpg" }));
+
+    expect(toggleFavorite).toHaveBeenCalledWith("D:\\ZX Wallpaper\\Online\\online-01.jpg");
+  });
+
+  it("lists liked online wallpapers in the favorites view", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(1);
+    const getState = runtime.getState;
+    runtime.getState = async () => ({
+      ...(await getState()),
+      favoritePaths: ["D:\\ZX Wallpaper\\Online\\online-01.jpg"],
+    });
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "我的喜欢" }));
+
+    expect(screen.getByRole("heading", { name: "我的喜欢" })).toBeTruthy();
+    expect(screen.getByText("online-01.jpg")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "取消喜欢 online-01.jpg" })).toBeTruthy();
+  });
+
+  it("dismisses a successful operation status after the feedback window", async () => {
+    const user = userEvent.setup();
+    render(<App runtime={createOnlineGalleryRuntime(0)} />);
+
+    await user.click(await screen.findByRole("button", { name: "暂停切换" }));
+    expect((await screen.findByRole("status")).textContent).toContain("操作已完成");
+
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull(), { timeout: 4_000 });
   });
 
   it("manually refreshes the downloaded online-image list", async () => {
@@ -149,19 +339,20 @@ describe("ZX Wallpaper application shell", () => {
 
   it("prewarms the visible online images and the next batch", async () => {
     const user = userEvent.setup();
-    const prewarmOnlineThumbnails = vi.fn(() => Promise.resolve());
-    render(<App runtime={createOnlineGalleryRuntime(50, undefined, prewarmOnlineThumbnails)} />);
+    const prewarmImageAssets = vi.fn(() => Promise.resolve());
+    render(<App runtime={createOnlineGalleryRuntime(50, undefined, prewarmImageAssets)} />);
 
     await user.click(await screen.findByRole("button", { name: "在线发现" }));
 
-    await waitFor(() => expect(prewarmOnlineThumbnails).toHaveBeenCalledWith(
-      Array.from({ length: 48 }, (_, index) => "image-" + String(index + 1).padStart(2, "0")),
+    await waitFor(() => expect(prewarmImageAssets).toHaveBeenCalledWith(
+      Array.from({ length: 48 }, (_, index) => `D:\\ZX Wallpaper\\Online\\online-${String(index + 1).padStart(2, "0")}.jpg`),
+      "grid",
     ));
   });
 
-  it("requests online thumbnails only after their cards enter the viewport", async () => {
+  it("requests online grid assets only after their cards enter the viewport", async () => {
     const observers: MockIntersectionObserver[] = [];
-    const getOnlineThumbnail = vi.fn(() => Promise.resolve("data:image/jpeg;base64,thumbnail"));
+    const getImageAsset = vi.fn(() => Promise.resolve({ src: "http://wallpaper-asset.localhost/thumbnail", width: 768, height: 432, status: "ready" as const }));
     vi.stubGlobal("IntersectionObserver", class MockIntersectionObserver {
       readonly elements: Element[] = [];
       constructor(readonly callback: IntersectionObserverCallback) {
@@ -178,10 +369,11 @@ describe("ZX Wallpaper application shell", () => {
 
     try {
       const user = userEvent.setup();
-      render(<App runtime={createOnlineGalleryRuntime(25, getOnlineThumbnail)} />);
+      render(<App runtime={createOnlineGalleryRuntime(25, getImageAsset)} />);
       await user.click(await screen.findByRole("button", { name: "在线发现" }));
+      getImageAsset.mockClear();
 
-      expect(getOnlineThumbnail).not.toHaveBeenCalled();
+      expect(getImageAsset).not.toHaveBeenCalled();
 
       const observer = observers[0];
       observer.callback(
@@ -189,8 +381,8 @@ describe("ZX Wallpaper application shell", () => {
         observer,
       );
 
-      await waitFor(() => expect(getOnlineThumbnail).toHaveBeenCalledWith("image-01"));
-      expect(getOnlineThumbnail).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(getImageAsset).toHaveBeenCalledWith("D:\\ZX Wallpaper\\Online\\online-01.jpg", "grid"));
+      expect(getImageAsset).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -211,27 +403,29 @@ class MockIntersectionObserver {
 
 function createOnlineGalleryRuntime(
   imageCount: number,
-  getOnlineThumbnail = vi.fn(() => Promise.resolve("data:image/jpeg;base64,thumbnail")),
-  prewarmOnlineThumbnails = vi.fn(() => Promise.resolve()),
+  getImageAsset = vi.fn(() => Promise.resolve({ src: "http://wallpaper-asset.localhost/thumbnail", width: 768, height: 432, status: "ready" as const })),
+  prewarmImageAssets = vi.fn(() => Promise.resolve()),
 ): DesktopRuntime {
   const state: AppState = {
     folders: [],
     intervalMinutes: 30,
     displayMode: "fill",
+    rotationOrder: "random",
     autoStart: false,
     paused: false,
     followSystemTheme: true,
+    hideToTrayOnClose: true,
     currentPath: null,
     remainingPaths: [],
     skippedPaths: [],
+    favoritePaths: [],
     globalNextShortcut: null,
     lastSwitchAt: null,
     onlineSources: [
       {
-        id: "source-1",
-        name: "测试来源",
-        kind: "builtin",
-        url: "https://example.test/wallpapers",
+        id: "upx8-4k",
+        name: "UPX8 综合壁纸 4K",
+        url: "https://wp.upx8.com/api.php",
         enabled: true,
         intervalHours: 24,
         lastRunAt: null,
@@ -245,7 +439,7 @@ function createOnlineGalleryRuntime(
       const number = String(index + 1).padStart(2, "0");
       return {
         id: `image-${number}`,
-        sourceId: "source-1",
+        sourceId: "upx8-4k",
         localPath: `D:\\ZX Wallpaper\\Online\\online-${number}.jpg`,
         sourcePageUrl: "https://example.test/wallpapers",
         imageUrl: `https://example.test/online-${number}.jpg`,
@@ -255,6 +449,7 @@ function createOnlineGalleryRuntime(
         mimeType: "image/jpeg",
       };
     }),
+    onlineSyncLogs: [],
     onlineDirectory: "D:\\ZX Wallpaper\\Online",
     onlineStorageLimitGb: 5,
     onlineMinimumResolution: 1920,
@@ -267,6 +462,7 @@ function createOnlineGalleryRuntime(
     folderStatuses: {},
     onlineStorageBytes: 0,
     globalShortcutRegistered: false,
+    shortcutStatus: { state: "disabled" },
   };
   const unchanged = () => Promise.resolve(state);
 
@@ -280,23 +476,22 @@ function createOnlineGalleryRuntime(
     rescanFolders: unchanged,
     nextWallpaper: unchanged,
     selectWallpaper: unchanged,
-    getPreviewThumbnail: vi.fn(() => Promise.resolve(null)),
+    getImageAsset,
+    prewarmImageAssets,
     skipCurrentWallpaper: unchanged,
+    toggleFavorite: unchanged,
     restoreSkippedPath: unchanged,
     restoreAllSkipped: unchanged,
     deleteSkippedPath: unchanged,
     togglePaused: unchanged,
-    addOnlineSource: unchanged,
     updateOnlineSource: unchanged,
-    removeOnlineSource: unchanged,
     runOnlineSource: unchanged,
+    runUpx8Category: unchanged,
     setOnlineImageAsWallpaper: unchanged,
     deleteOnlineImage: unchanged,
     selectOnlineDirectory: unchanged,
     revealOnlineImage: unchanged,
-    getOnlineThumbnail,
-    prewarmOnlineThumbnails,
-    getSkippedThumbnail: vi.fn(() => Promise.resolve(null)),
+    revealWallpaper: () => Promise.resolve(),
     onStateChanged: () => Promise.resolve(() => {}),
   };
 }

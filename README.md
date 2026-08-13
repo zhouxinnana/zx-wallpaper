@@ -6,7 +6,7 @@ Windows 11 本地优先的壁纸管理与自动切换软件。
 
 本地优先的 Windows 11 壁纸管理与自动切换软件，支持本地壁纸库、在线发现和系统托盘控制。
 
-建议的 GitHub 主题词：`windows`、`windows-11`、`wallpaper`、`wallpaper-changer`、`electron`、`desktop-app`。
+建议的 GitHub 主题词：`windows`、`windows-11`、`wallpaper`、`wallpaper-changer`、`tauri`、`desktop-app`。
 
 ## 功能
 
@@ -28,24 +28,18 @@ Windows 11 本地优先的壁纸管理与自动切换软件。
 
 ```powershell
 npm ci
-npm run dev
+npm run tauri:dev
 ```
 
-`npm run dev` 会同时启动 Vite 与 Electron。仅打开浏览器地址无法验证文件选择、系统托盘和桌面壁纸切换。
+`npm run tauri:dev` 会启动 Vite 与 Tauri 桌面端。仅打开浏览器地址无法验证文件选择、系统托盘和桌面壁纸切换。
 
 ## 打包
 
 ```powershell
-npm run dist
+npm run tauri:build
 ```
 
-只生成可直接运行的目录：
-
-```powershell
-npm run dist:unpacked
-```
-
-打包产物位于 `release/`，该目录不会提交到 Git。
+安装包产物位于 `src-tauri/target/release/bundle/`，该目录不会提交到 Git。
 
 ## 发布
 
@@ -59,4 +53,4 @@ git push origin "v$version"
 
 ## 技术栈
 
-Electron、React、TypeScript、Vite、electron-builder。
+Tauri、Rust、React、TypeScript、Vite。

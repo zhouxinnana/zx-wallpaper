@@ -4,7 +4,8 @@
 .playwright-mcp/
 node_modules/
 dist/
-dist-electron/
 release/
 output/
-tools/electron-builder/
+*.log
+src-tauri/domain-tests/target/
+src-tauri/gen/
