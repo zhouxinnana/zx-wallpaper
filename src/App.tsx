@@ -48,6 +48,8 @@ const previewImage =
   "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1600&q=85";
 
 const intervalOptions = [
+  { value: 5, label: "5 分钟" },
+  { value: 10, label: "10 分钟" },
   { value: 15, label: "15 分钟" },
   { value: 30, label: "30 分钟" },
   { value: 60, label: "1 小时" },
