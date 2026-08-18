@@ -172,6 +172,65 @@ describe("ZX Wallpaper application shell", () => {
     expect(runUpx8Category).toHaveBeenCalledWith("nature");
   });
 
+  it("applies the completed online-sync state returned by the command", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const initialState = await runtime.getState();
+    const completedState: AppState = {
+      ...initialState,
+      onlineImages: [
+        {
+          id: "image-01",
+          sourceId: "upx8-4k",
+          localPath: "D:\\ZX Wallpaper\\Online\\online-01.jpg",
+          sourcePageUrl: "https://example.test/wallpapers",
+          imageUrl: "https://example.test/online-01.jpg",
+          downloadedAt: "2026-08-10T00:00:00Z",
+          width: 3840,
+          height: 2160,
+          mimeType: "image/jpeg",
+        },
+      ],
+      onlineSources: initialState.onlineSources.map((source) => ({
+        ...source,
+        lastDownloaded: 1,
+      })),
+      onlineSyncLogs: [
+        {
+          id: "sync-nature",
+          sourceId: "upx8-4k",
+          categoryKey: "nature",
+          categoryLabel: "风景",
+          requestUrl: "https://wp.upx8.com/api.php?category=nature",
+          format: "json",
+          resolution: "1920x1080",
+          count: 10,
+          startedAt: "2026-08-10T00:00:00Z",
+          finishedAt: "2026-08-10T00:00:01Z",
+          durationMs: 1000,
+          status: "success",
+          responseStatus: 200,
+          discovered: 1,
+          downloaded: 1,
+          skipped: 0,
+          responseImageUrls: ["https://example.test/online-01.jpg"],
+          errors: [],
+          downloadFailures: [],
+        },
+      ],
+    };
+    const runUpx8Category = vi.fn(() => Promise.resolve(completedState));
+    runtime.runUpx8Category = runUpx8Category;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+    expect(screen.getByText("尚未下载在线图片")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "同步分类 风景" }));
+
+    expect(await screen.findByRole("button", { name: "查看原图 online-01.jpg" })).toBeTruthy();
+    expect(screen.getByText("成功")).toBeTruthy();
+  });
+
   it("shows the request parameters and returned URLs for an online sync", async () => {
     const user = userEvent.setup();
     const runtime = createOnlineGalleryRuntime(0);

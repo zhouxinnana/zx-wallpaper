@@ -1,6 +1,7 @@
 use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
+    time::Duration as StdDuration,
 };
 
 use image::GenericImageView;
@@ -15,6 +16,7 @@ use uuid::Uuid;
 
 const MAX_REDIRECTS: usize = 5;
 const MAX_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
+const HTTP_REQUEST_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 
 #[derive(Clone, Debug)]
 pub struct Candidate {
@@ -213,6 +215,7 @@ pub async fn fetch_upx8_category(
     let url = validate_public_https_url(url.as_str()).await?;
     let client = Client::builder()
         .redirect(Policy::none())
+        .timeout(HTTP_REQUEST_TIMEOUT)
         .build()
         .map_err(|error| format!("无法初始化网络请求: {error}"))?;
     let (page_url, response) = request_with_checked_redirects(&client, url, false).await?;
@@ -273,6 +276,7 @@ pub async fn download_candidate(
             .map_err(|reason| DownloadFailure::new(&candidate.image_url, reason))?;
     let client = Client::builder()
         .redirect(Policy::none())
+        .timeout(HTTP_REQUEST_TIMEOUT)
         .build()
         .map_err(|error| DownloadFailure::new(&candidate.image_url, format!("无法初始化图片下载: {error}")))?;
     let (resolved_url, response) = request_with_checked_redirects(

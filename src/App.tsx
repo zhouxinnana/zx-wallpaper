@@ -167,7 +167,10 @@ export default function App({ runtime }: { runtime?: DesktopRuntime }) {
     setError(null);
     setStatus(operationMessage(key, "pending"));
     try {
-      await action();
+      const nextState = await action();
+      if (isAppState(nextState)) {
+        setState(nextState);
+      }
       const successMessage = operationMessage(key, "success");
       setStatus(successMessage);
       statusTimerRef.current = window.setTimeout(() => {
@@ -744,6 +747,9 @@ function createBrowserPreviewApi(): DesktopRuntime {
 function pathName(path: string) { return path.split(/[/\\]/).pop() ?? path; }
 function parentPath(path: string) { const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")); return slash < 0 ? path : path.slice(0, slash); }
 function samePath(left: string, right: string) { return left.replace(/\//g, "\\").toLowerCase() === right.replace(/\//g, "\\").toLowerCase(); }
+function isAppState(value: unknown): value is AppState {
+  return typeof value === "object" && value !== null && "folders" in value && "onlineImages" in value && "onlineSyncLogs" in value;
+}
 function getAutoSwitchProgress(lastSwitchAt: string | null, intervalMinutes: number, now: number) {
   if (!lastSwitchAt || intervalMinutes <= 0) return 0;
   const switchedAt = Date.parse(lastSwitchAt);
