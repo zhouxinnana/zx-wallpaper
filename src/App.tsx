@@ -209,7 +209,7 @@ export default function App({ runtime }: { runtime?: DesktopRuntime }) {
         <div className="titlebar-brand">
           <span className="zx-mark" aria-hidden="true">ZX</span>
           <span>ZX Wallpaper</span>
-          <span className="titlebar-version">v1.0.0</span>
+          <span className="titlebar-version">v0.1.4</span>
         </div>
         <div className="window-actions" aria-label="窗口控制">
           <button type="button" aria-label="最小化窗口" disabled>−</button>
@@ -244,7 +244,7 @@ export default function App({ runtime }: { runtime?: DesktopRuntime }) {
           <div className="sidebar-runtime">
             <span className={state.paused ? "runtime-dot is-paused" : "runtime-dot"} />
             <span>{state.paused ? "已暂停" : "后台运行中"}</span>
-            <small>ZX Wallpaper · v1.0.0</small>
+            <small>ZX Wallpaper · v0.1.4</small>
           </div>
         </aside>
         <main className="prototype-main">
@@ -645,7 +645,7 @@ function SettingsView({ state, updateConfig }: { state: AppState; updateConfig: 
     <SettingsPanel title="自动切换"><SettingsRow label="切换间隔" description="下一张壁纸的等待时长"><select aria-label="切换间隔" value={state.intervalMinutes} onChange={(event) => updateConfig({ intervalMinutes: Number(event.target.value) })}>{intervalOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></SettingsRow><SettingsRow label="切换顺序" description={state.rotationOrder === "random" ? "一轮内不重复" : "按绝对路径稳定循环"}><div className="segmented-control"><button type="button" className={state.rotationOrder === "random" ? "is-selected" : undefined} onClick={() => updateConfig({ rotationOrder: "random" })}>随机</button><button type="button" className={state.rotationOrder === "sequential" ? "is-selected" : undefined} onClick={() => updateConfig({ rotationOrder: "sequential" as RotationOrder })}>顺序</button></div></SettingsRow><SettingsRow label="显示方式" description="壁纸填充屏幕的方式"><select aria-label="设置显示方式" value={state.displayMode} onChange={(event) => updateConfig({ displayMode: event.target.value as WallpaperMode })}>{displayModes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select></SettingsRow></SettingsPanel>
     <SettingsPanel title="系统集成"><SettingsRow label="开机自动启动" description="仅在系统托盘运行，不显示主窗口"><Toggle label="开机自动启动" checked={state.autoStart} onChange={(autoStart) => updateConfig({ autoStart })} /></SettingsRow><SettingsRow label="跟随系统主题" description="深色 / 浅色主题切换时同步调整"><Toggle label="跟随系统主题" checked={state.followSystemTheme} onChange={(followSystemTheme) => updateConfig({ followSystemTheme })} /></SettingsRow><SettingsRow label="关闭窗口时隐藏到托盘" description="关闭后继续在后台运行"><Toggle label="关闭窗口时隐藏到托盘" checked={state.hideToTrayOnClose} onChange={(hideToTrayOnClose) => updateConfig({ hideToTrayOnClose })} /></SettingsRow></SettingsPanel>
     <SettingsPanel title="全局快捷键"><SettingsRow label="下一张壁纸" description="保存时立即尝试注册"><div className="shortcut-editor"><input aria-label="全局下一张快捷键" placeholder="例如 Ctrl+Alt+N" value={nextShortcut} onChange={(event) => setNextShortcut(event.target.value)} onBlur={saveNextShortcut} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><ShortcutStatusTag status={state.shortcutStatus} /></div></SettingsRow><SettingsRow label="跳过此图" description="保存时立即尝试注册"><div className="shortcut-editor"><input aria-label="全局跳过快捷键" placeholder="例如 Ctrl+Alt+S" value={skipShortcut} onChange={(event) => setSkipShortcut(event.target.value)} onBlur={saveSkipShortcut} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><ShortcutStatusTag status={state.skipShortcutStatus} /></div></SettingsRow></SettingsPanel>
-    <SettingsPanel title="更新"><SettingsRow label="当前版本" description="手动检查并由用户确认下载"><span className="settings-version">v1.0.0</span></SettingsRow><SettingsRow label="检查更新" description="当前发布未配置签名更新清单"><button className="action-button is-small" type="button" disabled title="需要签名私钥和更新地址">检查更新</button></SettingsRow></SettingsPanel>
+    <SettingsPanel title="更新"><SettingsRow label="当前版本" description="手动检查并由用户确认下载"><span className="settings-version">v0.1.4</span></SettingsRow><SettingsRow label="检查更新" description="当前发布未配置签名更新清单"><button className="action-button is-small" type="button" disabled title="需要签名私钥和更新地址">检查更新</button></SettingsRow></SettingsPanel>
   </div>;
 }
 
