@@ -390,7 +390,7 @@ function WorkbenchView({
         </div>
       </section>
       <section className="content-section skipped-section">
-        <SectionHeading title={<>已跳过图片 {state.skippedPaths.length > 0 && <b>({state.skippedPaths.length})</b>}</>} action={state.skippedPaths.length ? <button className="action-button is-small" type="button" onClick={() => void run("restore-all", () => api.restoreAllSkipped())}>全部恢复</button> : undefined} />
+        <SectionHeading title={<>已跳过图片 {state.skippedPaths.length > 0 && <b>({state.skippedPaths.length})</b>}</>} action={state.skippedPaths.length ? <div className="section-actions"><button className="action-button is-small" type="button" onClick={() => void run("restore-all", () => api.restoreAllSkipped())}>全部恢复</button><button className="action-button is-small is-danger" type="button" onClick={() => void run("delete-all-skipped", () => api.deleteAllSkipped())}>全部删除</button></div> : undefined} />
         {state.skippedPaths.length === 0 ? <EmptyState text="暂无跳过的图片" /> : <div className="skipped-grid">
           {state.skippedPaths.map((path) => <SkippedCard key={path} path={path} previewUrl={state.previewUrl ?? previewImage} api={api} run={run} onOpenViewer={onOpenViewer} />)}
         </div>}
@@ -635,13 +635,16 @@ function OnlineImageCard({ image, isFavorite, api, busy, run, onOpenViewer }: { 
 }
 
 function SettingsView({ state, updateConfig }: { state: AppState; updateConfig: (patch: Partial<AppConfig>) => void }) {
-  const [shortcut, setShortcut] = useState(state.globalNextShortcut ?? "");
-  useEffect(() => setShortcut(state.globalNextShortcut ?? ""), [state.globalNextShortcut]);
-  const saveShortcut = () => { const value = shortcut.trim() || null; if (value !== state.globalNextShortcut) updateConfig({ globalNextShortcut: value }); };
+  const [nextShortcut, setNextShortcut] = useState(state.globalNextShortcut ?? "");
+  const [skipShortcut, setSkipShortcut] = useState(state.globalSkipShortcut ?? "");
+  useEffect(() => setNextShortcut(state.globalNextShortcut ?? ""), [state.globalNextShortcut]);
+  useEffect(() => setSkipShortcut(state.globalSkipShortcut ?? ""), [state.globalSkipShortcut]);
+  const saveNextShortcut = () => { const value = nextShortcut.trim() || null; if (value !== state.globalNextShortcut) updateConfig({ globalNextShortcut: value }); };
+  const saveSkipShortcut = () => { const value = skipShortcut.trim() || null; if (value !== state.globalSkipShortcut) updateConfig({ globalSkipShortcut: value }); };
   return <div className="prototype-page settings-page">
     <SettingsPanel title="自动切换"><SettingsRow label="切换间隔" description="下一张壁纸的等待时长"><select aria-label="切换间隔" value={state.intervalMinutes} onChange={(event) => updateConfig({ intervalMinutes: Number(event.target.value) })}>{intervalOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></SettingsRow><SettingsRow label="切换顺序" description={state.rotationOrder === "random" ? "一轮内不重复" : "按绝对路径稳定循环"}><div className="segmented-control"><button type="button" className={state.rotationOrder === "random" ? "is-selected" : undefined} onClick={() => updateConfig({ rotationOrder: "random" })}>随机</button><button type="button" className={state.rotationOrder === "sequential" ? "is-selected" : undefined} onClick={() => updateConfig({ rotationOrder: "sequential" as RotationOrder })}>顺序</button></div></SettingsRow><SettingsRow label="显示方式" description="壁纸填充屏幕的方式"><select aria-label="设置显示方式" value={state.displayMode} onChange={(event) => updateConfig({ displayMode: event.target.value as WallpaperMode })}>{displayModes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select></SettingsRow></SettingsPanel>
     <SettingsPanel title="系统集成"><SettingsRow label="开机自动启动" description="仅在系统托盘运行，不显示主窗口"><Toggle label="开机自动启动" checked={state.autoStart} onChange={(autoStart) => updateConfig({ autoStart })} /></SettingsRow><SettingsRow label="跟随系统主题" description="深色 / 浅色主题切换时同步调整"><Toggle label="跟随系统主题" checked={state.followSystemTheme} onChange={(followSystemTheme) => updateConfig({ followSystemTheme })} /></SettingsRow><SettingsRow label="关闭窗口时隐藏到托盘" description="关闭后继续在后台运行"><Toggle label="关闭窗口时隐藏到托盘" checked={state.hideToTrayOnClose} onChange={(hideToTrayOnClose) => updateConfig({ hideToTrayOnClose })} /></SettingsRow></SettingsPanel>
-    <SettingsPanel title="全局快捷键"><SettingsRow label="下一张壁纸" description="保存时立即尝试注册"><div className="shortcut-editor"><input aria-label="全局下一张快捷键" placeholder="例如 Ctrl+Alt+N" value={shortcut} onChange={(event) => setShortcut(event.target.value)} onBlur={saveShortcut} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><ShortcutStatusTag status={state.shortcutStatus} /></div></SettingsRow></SettingsPanel>
+    <SettingsPanel title="全局快捷键"><SettingsRow label="下一张壁纸" description="保存时立即尝试注册"><div className="shortcut-editor"><input aria-label="全局下一张快捷键" placeholder="例如 Ctrl+Alt+N" value={nextShortcut} onChange={(event) => setNextShortcut(event.target.value)} onBlur={saveNextShortcut} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><ShortcutStatusTag status={state.shortcutStatus} /></div></SettingsRow><SettingsRow label="跳过此图" description="保存时立即尝试注册"><div className="shortcut-editor"><input aria-label="全局跳过快捷键" placeholder="例如 Ctrl+Alt+S" value={skipShortcut} onChange={(event) => setSkipShortcut(event.target.value)} onBlur={saveSkipShortcut} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><ShortcutStatusTag status={state.skipShortcutStatus} /></div></SettingsRow></SettingsPanel>
     <SettingsPanel title="更新"><SettingsRow label="当前版本" description="手动检查并由用户确认下载"><span className="settings-version">v1.0.0</span></SettingsRow><SettingsRow label="检查更新" description="当前发布未配置签名更新清单"><button className="action-button is-small" type="button" disabled title="需要签名私钥和更新地址">检查更新</button></SettingsRow></SettingsPanel>
   </div>;
 }
@@ -711,12 +714,12 @@ function createBrowserPreviewApi(): DesktopRuntime {
   let state: AppState = {
     folders: [{ id: "demo-scenic", path: "D:\\Pictures\\Wallpapers\\Scenic", enabled: true }, { id: "online-library", path: "D:\\Pictures\\ZX Wallpaper\\Online", enabled: true }],
     intervalMinutes: 30, displayMode: "fill", rotationOrder: "random", autoStart: true, paused: false, followSystemTheme: true, hideToTrayOnClose: true,
-    currentPath: "D:\\Pictures\\Wallpapers\\Scenic\\mist-over-the-ridge.jpg", remainingPaths: previewItems.slice(1).map((item) => item.path), skippedPaths: [], favoritePaths: [], globalNextShortcut: null, lastSwitchAt: new Date(Date.now() - 8 * 60_000).toISOString(),
+    currentPath: "D:\\Pictures\\Wallpapers\\Scenic\\mist-over-the-ridge.jpg", remainingPaths: previewItems.slice(1).map((item) => item.path), skippedPaths: [], favoritePaths: [], globalNextShortcut: null, globalSkipShortcut: null, lastSwitchAt: new Date(Date.now() - 8 * 60_000).toISOString(),
     onlineSources: [{ id: "upx8-4k", name: "UPX8 综合壁纸 4K", url: "https://wp.upx8.com/api.php", enabled: true, intervalHours: 24, lastRunAt: null, nextRunAt: null, lastDiscovered: 0, lastDownloaded: 0, lastError: null, categoryStatuses: [] }],
     onlineImages: [], onlineSyncLogs: [], onlineDirectory: "D:\\Pictures\\ZX Wallpaper\\Online", onlineStorageLimitGb: 5, onlineMinimumResolution: 1920,
     availableCount: 128, previewUrl: previewImage, previewItems,
     folderStatuses: { "demo-scenic": { kind: "available", availableCount: 110, invalidCount: 0, scannedAt: new Date().toISOString() } },
-    onlineStorageBytes: 1.2 * 1024 ** 3, globalShortcutRegistered: false, shortcutStatus: { state: "disabled" },
+    onlineStorageBytes: 1.2 * 1024 ** 3, globalShortcutRegistered: false, shortcutStatus: { state: "disabled" }, skipShortcutStatus: { state: "disabled" },
   };
   const listeners = new Set<(next: AppState) => void>();
   const update = (patch: Partial<AppState>) => { state = { ...state, ...patch }; listeners.forEach((listener) => listener(state)); return Promise.resolve(state); };
@@ -738,7 +741,7 @@ function createBrowserPreviewApi(): DesktopRuntime {
     openFolder: () => Promise.resolve(state), rescanFolders: () => Promise.resolve(state), nextWallpaper: () => selectPreview(nextPath), selectWallpaper: selectPreview, getImageAsset: (_path, kind) => Promise.resolve({ src: previewImage, width: kind === "strip" ? 384 : kind === "grid" ? 768 : 1600, height: kind === "strip" ? 216 : kind === "grid" ? 432 : 900, status: "ready" }), prewarmImageAssets: () => Promise.resolve(),
     skipCurrentWallpaper: () => update({ skippedPaths: state.currentPath ? [...state.skippedPaths, state.currentPath] : state.skippedPaths, currentPath: nextPath }),
     toggleFavorite: (path) => update({ favoritePaths: state.favoritePaths.some((item) => samePath(item, path)) ? state.favoritePaths.filter((item) => !samePath(item, path)) : [...state.favoritePaths, path] }),
-    restoreSkippedPath: (path) => update({ skippedPaths: state.skippedPaths.filter((item) => item !== path) }), restoreAllSkipped: () => update({ skippedPaths: [] }), deleteSkippedPath: (path) => update({ skippedPaths: state.skippedPaths.filter((item) => item !== path) }), togglePaused: () => update({ paused: !state.paused }),
+    restoreSkippedPath: (path) => update({ skippedPaths: state.skippedPaths.filter((item) => item !== path) }), restoreAllSkipped: () => update({ skippedPaths: [] }), deleteSkippedPath: (path) => update({ skippedPaths: state.skippedPaths.filter((item) => item !== path) }), deleteAllSkipped: () => update({ skippedPaths: [] }), togglePaused: () => update({ paused: !state.paused }),
     updateOnlineSource: (source) => update({ onlineSources: state.onlineSources.map((item) => item.id === source.id ? source : item) }), runOnlineSource: () => Promise.resolve(state), runUpx8Category: () => Promise.resolve(state),
     setOnlineImageAsWallpaper: (id) => { const image = state.onlineImages.find((item) => item.id === id); return image ? update({ currentPath: image.localPath, paused: true }) : Promise.resolve(state); }, deleteOnlineImage: (id) => update({ onlineImages: state.onlineImages.filter((image) => image.id !== id), favoritePaths: state.favoritePaths.filter((path) => !samePath(path, state.onlineImages.find((image) => image.id === id)?.localPath ?? "")) }), selectOnlineDirectory: () => update({ onlineDirectory: "D:\\Pictures\\ZX Wallpaper Library" }), revealOnlineImage: () => Promise.resolve(state), revealWallpaper: () => Promise.resolve(), onStateChanged: (listener) => { listeners.add(listener); return Promise.resolve(() => listeners.delete(listener)); },
   };

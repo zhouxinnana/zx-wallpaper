@@ -118,6 +118,7 @@ export interface AppConfig {
   skippedPaths: string[];
   favoritePaths: string[];
   globalNextShortcut: string | null;
+  globalSkipShortcut: string | null;
   lastSwitchAt: string | null;
   onlineSources: OnlineSource[];
   onlineImages: OnlineImage[];
@@ -135,6 +136,7 @@ export interface AppState extends AppConfig {
   onlineStorageBytes: number;
   globalShortcutRegistered: boolean;
   shortcutStatus: ShortcutStatus;
+  skipShortcutStatus: ShortcutStatus;
 }
 
 export interface DesktopRuntime {
@@ -154,6 +156,7 @@ export interface DesktopRuntime {
   restoreSkippedPath(filePath: string): Promise<AppState>;
   restoreAllSkipped(): Promise<AppState>;
   deleteSkippedPath(filePath: string): Promise<AppState>;
+  deleteAllSkipped(): Promise<AppState>;
   togglePaused(): Promise<AppState>;
   updateOnlineSource(source: OnlineSource): Promise<AppState>;
   runOnlineSource(sourceId: string): Promise<AppState>;

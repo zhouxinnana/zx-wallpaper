@@ -44,6 +44,7 @@ export function createTauriRuntime(bindings: TauriBindings): DesktopRuntime {
       command("restore_skipped", { filePath }),
     restoreAllSkipped: () => command("restore_all_skipped"),
     deleteSkippedPath: (filePath) => command("delete_skipped", { filePath }),
+    deleteAllSkipped: () => command("delete_all_skipped"),
     togglePaused: () => command("toggle_paused"),
     updateOnlineSource: (source) => command("update_online_source", { source }),
     runOnlineSource: (sourceId) => command("run_online_source", { sourceId }),

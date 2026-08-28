@@ -61,6 +61,7 @@ pub fn run() {
             runtime::restore_skipped,
             runtime::restore_all_skipped,
             runtime::delete_skipped,
+            runtime::delete_all_skipped,
             runtime::toggle_paused,
             runtime::update_preferences,
             runtime::update_online_source,
@@ -82,11 +83,13 @@ pub fn run() {
 fn setup_tray(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
     let show_window = MenuItemBuilder::with_id("tray-show", "显示主窗口").build(app)?;
     let next_wallpaper = MenuItemBuilder::with_id("tray-next", "切换下一张").build(app)?;
+    let skip_current = MenuItemBuilder::with_id("tray-skip", "跳过此图").build(app)?;
     let toggle_paused = MenuItemBuilder::with_id("tray-pause", "暂停 / 恢复自动切换").build(app)?;
     let quit = MenuItemBuilder::with_id("tray-quit", "退出 ZX Wallpaper").build(app)?;
     let menu = MenuBuilder::new(app)
         .item(&show_window)
         .item(&next_wallpaper)
+        .item(&skip_current)
         .item(&toggle_paused)
         .separator()
         .item(&quit)
@@ -104,6 +107,7 @@ fn setup_tray(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "tray-show" => show_main_window(app),
             "tray-next" => runtime::trigger_next_wallpaper(app),
+            "tray-skip" => runtime::skip_current_wallpaper_from_system(app),
             "tray-pause" => runtime::toggle_paused_from_system(app),
             "tray-quit" => app.exit(0),
             _ => {}

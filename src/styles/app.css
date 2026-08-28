@@ -92,6 +92,7 @@ select { cursor: pointer; }
 
 .content-section { padding: 20px 24px 0; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; margin-bottom: 12px; }
+.section-actions { display: flex; gap: 8px; }
 .section-heading h2 { margin: 0; color: #4d6080; font: 10px "JetBrains Mono", monospace; letter-spacing: .08em; text-transform: uppercase; }
 .section-heading h2 b { color: #3b82f6; font-weight: 500; }
 .folder-table { border: 1px solid #1a2740; border-radius: 6px; overflow: hidden; }

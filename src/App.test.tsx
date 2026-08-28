@@ -69,6 +69,23 @@ describe("ZX Wallpaper application shell", () => {
     expect(toggleFavorite).toHaveBeenCalledWith("D:\\Wallpapers\\current.jpg");
   });
 
+  it("deletes all skipped images", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const getState = runtime.getState;
+    runtime.getState = async () => ({
+      ...(await getState()),
+      skippedPaths: ["D:\\Wallpapers\\skipped-01.jpg", "D:\\Wallpapers\\skipped-02.jpg"],
+    });
+    const deleteAllSkipped = vi.fn(() => runtime.getState());
+    runtime.deleteAllSkipped = deleteAllSkipped;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "全部删除" }));
+
+    expect(deleteAllSkipped).toHaveBeenCalledOnce();
+  });
+
   it("upgrades the current preview from a grid asset to a hero asset", async () => {
     const runtime = createOnlineGalleryRuntime(0);
     const getState = runtime.getState;
@@ -142,6 +159,20 @@ describe("ZX Wallpaper application shell", () => {
     await user.click(screen.getByRole("button", { name: "顺序" }));
 
     expect(updateConfig).toHaveBeenCalledWith({ rotationOrder: "sequential" });
+  });
+
+  it("persists the requested skip shortcut from settings", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const updateConfig = vi.fn(() => runtime.getState());
+    runtime.updateConfig = updateConfig;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "设置" }));
+    await user.type(screen.getByLabelText("全局跳过快捷键"), "Ctrl+Alt+S");
+    await user.tab();
+
+    expect(updateConfig).toHaveBeenCalledWith({ globalSkipShortcut: "Ctrl+Alt+S" });
   });
 
   it("shows the concrete global shortcut registration error", async () => {
@@ -479,6 +510,7 @@ function createOnlineGalleryRuntime(
     skippedPaths: [],
     favoritePaths: [],
     globalNextShortcut: null,
+    globalSkipShortcut: null,
     lastSwitchAt: null,
     onlineSources: [
       {
@@ -522,6 +554,7 @@ function createOnlineGalleryRuntime(
     onlineStorageBytes: 0,
     globalShortcutRegistered: false,
     shortcutStatus: { state: "disabled" },
+    skipShortcutStatus: { state: "disabled" },
   };
   const unchanged = () => Promise.resolve(state);
 
@@ -542,6 +575,7 @@ function createOnlineGalleryRuntime(
     restoreSkippedPath: unchanged,
     restoreAllSkipped: unchanged,
     deleteSkippedPath: unchanged,
+    deleteAllSkipped: unchanged,
     togglePaused: unchanged,
     updateOnlineSource: unchanged,
     runOnlineSource: unchanged,

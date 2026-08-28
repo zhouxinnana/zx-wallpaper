@@ -16,6 +16,7 @@ const state: AppState = {
   skippedPaths: [],
   favoritePaths: [],
   globalNextShortcut: null,
+  globalSkipShortcut: null,
   lastSwitchAt: null,
   onlineSources: [],
   onlineImages: [],
@@ -30,6 +31,7 @@ const state: AppState = {
   onlineStorageBytes: 0,
   globalShortcutRegistered: false,
   shortcutStatus: { state: "disabled" },
+  skipShortcutStatus: { state: "disabled" },
 };
 
 describe("Tauri runtime", () => {
@@ -82,6 +84,14 @@ describe("Tauri runtime", () => {
     expect(invoke).toHaveBeenCalledWith("toggle_favorite", {
       filePath: "D:\\Wallpapers\\next.jpg",
     });
+  });
+
+  it("forwards deleting all skipped images", async () => {
+    const invoke = vi.fn().mockResolvedValue(state);
+    const runtime = createTauriRuntime({ invoke, listen: vi.fn() });
+
+    await expect(runtime.deleteAllSkipped()).resolves.toEqual(state);
+    expect(invoke).toHaveBeenCalledWith("delete_all_skipped");
   });
 
   it("forwards state events and unregisters the listener", async () => {

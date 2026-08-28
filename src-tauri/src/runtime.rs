@@ -159,6 +159,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub global_next_shortcut: Option<String>,
     #[serde(default)]
+    pub global_skip_shortcut: Option<String>,
+    #[serde(default)]
     pub last_switch_at: Option<String>,
     #[serde(default)]
     pub online_sources: Vec<OnlineSource>,
@@ -190,6 +192,7 @@ impl Default for AppConfig {
             skipped_paths: Vec::new(),
             favorite_paths: Vec::new(),
             global_next_shortcut: None,
+            global_skip_shortcut: None,
             last_switch_at: None,
             online_sources: built_in_sources(),
             online_images: Vec::new(),
@@ -222,6 +225,7 @@ pub struct AppState {
     online_storage_bytes: u64,
     global_shortcut_registered: bool,
     shortcut_status: ShortcutStatus,
+    skip_shortcut_status: ShortcutStatus,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -257,6 +261,7 @@ pub struct ConfigPatch {
     follow_system_theme: Option<bool>,
     hide_to_tray_on_close: Option<bool>,
     global_next_shortcut: Option<Option<String>>,
+    global_skip_shortcut: Option<Option<String>>,
     online_directory: Option<Option<String>>,
     online_storage_limit_gb: Option<u8>,
     online_minimum_resolution: Option<u16>,
@@ -269,6 +274,8 @@ pub struct RuntimeState {
     pub(crate) image_assets: ImageAssetManager,
     shortcut_status: Mutex<ShortcutStatus>,
     registered_shortcut: Mutex<Option<String>>,
+    skip_shortcut_status: Mutex<ShortcutStatus>,
+    registered_skip_shortcut: Mutex<Option<String>>,
     upx8_next_request_at: Mutex<Instant>,
     state_file: PathBuf,
 }
@@ -299,6 +306,8 @@ impl RuntimeState {
             image_assets: ImageAssetManager::new(directory.join("image-cache")),
             shortcut_status: Mutex::new(ShortcutStatus::Disabled),
             registered_shortcut: Mutex::new(None),
+            skip_shortcut_status: Mutex::new(ShortcutStatus::Disabled),
+            registered_skip_shortcut: Mutex::new(None),
             upx8_next_request_at: Mutex::new(Instant::now()),
             state_file,
         })
@@ -392,8 +401,8 @@ fn request_initial_scan(app: &AppHandle, state: &RuntimeState) {
         state
             .initial_scan_in_progress
             .store(false, Ordering::Release);
-        let shortcut_status = shortcut_status(&state).unwrap_or_default();
-        let snapshot = build_state_from_scan(config, scan, shortcut_status);
+        let (shortcut_status, skip_shortcut_status) = shortcut_statuses(&state).unwrap_or_default();
+        let snapshot = build_state_from_scan(config, scan, shortcut_status, skip_shortcut_status);
         let _ = app.emit("app://state-changed", &snapshot);
     });
 }
@@ -403,13 +412,26 @@ pub fn synchronize_system_integration(app: &AppHandle) -> Result<(), String> {
     let config = lock_config(&state)?.clone();
     synchronize_autostart(app, config.auto_start)?;
     let requested = config.global_next_shortcut.as_deref();
-    match replace_global_shortcut(app, None, requested) {
+    match replace_global_shortcut(app, None, requested, trigger_next_wallpaper) {
         Ok((status, registered)) => {
             *lock_shortcut_status(&state)? = status;
             *lock_registered_shortcut(&state)? = registered;
         }
         Err(message) => {
             *lock_shortcut_status(&state)? = ShortcutStatus::Error {
+                shortcut: requested.unwrap_or_default().to_string(),
+                message,
+            };
+        }
+    }
+    let requested = config.global_skip_shortcut.as_deref();
+    match replace_global_shortcut(app, None, requested, skip_current_wallpaper_from_system) {
+        Ok((status, registered)) => {
+            *lock_skip_shortcut_status(&state)? = status;
+            *lock_registered_skip_shortcut(&state)? = registered;
+        }
+        Err(message) => {
+            *lock_skip_shortcut_status(&state)? = ShortcutStatus::Error {
                 shortcut: requested.unwrap_or_default().to_string(),
                 message,
             };
@@ -455,6 +477,7 @@ fn replace_global_shortcut(
     app: &AppHandle,
     active_shortcut: Option<&str>,
     requested_shortcut: Option<&str>,
+    action: fn(&AppHandle),
 ) -> Result<(ShortcutStatus, Option<String>), String> {
     let shortcuts = app.global_shortcut();
     let requested_shortcut = requested_shortcut.map(str::trim).filter(|value| !value.is_empty());
@@ -479,9 +502,9 @@ fn replace_global_shortcut(
         return Ok((ShortcutStatus::Disabled, None));
     };
     shortcuts
-        .on_shortcut(shortcut, |app, _, event| {
+        .on_shortcut(shortcut, move |app, _, event| {
             if event.state == ShortcutState::Pressed {
-                trigger_next_wallpaper(app);
+                action(app);
             }
         })
         .map_err(|error| format!("无法注册全局快捷键: {error}"))?;
@@ -510,6 +533,11 @@ pub fn hide_to_tray_on_close(app: &AppHandle) -> bool {
 pub fn trigger_next_wallpaper(app: &AppHandle) {
     let state = app.state::<RuntimeState>();
     let _ = mutate_with_cached_scan(app, &state, switch_to_next_wallpaper);
+}
+
+pub fn skip_current_wallpaper_from_system(app: &AppHandle) {
+    let state = app.state::<RuntimeState>();
+    let _ = mutate_with_cached_scan(app, &state, skip_current_wallpaper_config);
 }
 
 pub fn toggle_paused_from_system(app: &AppHandle) {
@@ -621,7 +649,13 @@ pub fn get_state(app: AppHandle, state: State<'_, RuntimeState>) -> Result<AppSt
         request_initial_scan(&app, &state);
         initial_scan(&config)
     });
-    Ok(build_state_from_scan(config, scan, shortcut_status(&state)?))
+    let (shortcut_status, skip_shortcut_status) = shortcut_statuses(&state)?;
+    Ok(build_state_from_scan(
+        config,
+        scan,
+        shortcut_status,
+        skip_shortcut_status,
+    ))
 }
 
 #[tauri::command]
@@ -754,20 +788,7 @@ pub fn skip_current_wallpaper(
     app: AppHandle,
     state: State<'_, RuntimeState>,
 ) -> Result<AppState, String> {
-    mutate_with_cached_scan(&app, &state, |config| {
-        let current = config
-            .current_path
-            .clone()
-            .ok_or_else(|| "There is no active wallpaper to skip.".to_string())?;
-        if !config
-            .skipped_paths
-            .iter()
-            .any(|path| same_path(path, &current))
-        {
-            config.skipped_paths.push(current);
-        }
-        switch_to_next_wallpaper(config)
-    })
+    mutate_with_cached_scan(&app, &state, skip_current_wallpaper_config)
 }
 
 #[tauri::command]
@@ -823,6 +844,19 @@ pub fn delete_skipped(
 }
 
 #[tauri::command]
+pub fn delete_all_skipped(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+) -> Result<AppState, String> {
+    let paths = lock_config(&state)?.skipped_paths.clone();
+    let snapshot = mutate(&app, &state, |config| delete_all_skipped_files(config))?;
+    for path in paths {
+        state.image_assets.purge_source(&path);
+    }
+    Ok(snapshot)
+}
+
+#[tauri::command]
 pub fn toggle_paused(app: AppHandle, state: State<'_, RuntimeState>) -> Result<AppState, String> {
     mutate_without_rescan(&app, &state, |config| {
         config.paused = !config.paused;
@@ -852,6 +886,7 @@ pub fn update_preferences(
             &app,
             active_shortcut.as_deref(),
             requested_shortcut.as_deref(),
+            trigger_next_wallpaper,
         ) {
             Ok((status, registered)) => {
                 *lock_shortcut_status(&state)? = status;
@@ -864,6 +899,35 @@ pub fn update_preferences(
                     message,
                 };
                 patch.global_next_shortcut = None;
+            }
+        }
+    }
+    if patch.global_skip_shortcut.is_some() {
+        let requested_shortcut = patch
+            .global_skip_shortcut
+            .as_ref()
+            .and_then(|shortcut| shortcut.as_deref())
+            .map(str::trim)
+            .filter(|shortcut| !shortcut.is_empty())
+            .map(str::to_string);
+        let active_shortcut = lock_registered_skip_shortcut(&state)?.clone();
+        match replace_global_shortcut(
+            &app,
+            active_shortcut.as_deref(),
+            requested_shortcut.as_deref(),
+            skip_current_wallpaper_from_system,
+        ) {
+            Ok((status, registered)) => {
+                *lock_skip_shortcut_status(&state)? = status;
+                *lock_registered_skip_shortcut(&state)? = registered;
+                patch.global_skip_shortcut = Some(requested_shortcut);
+            }
+            Err(message) => {
+                *lock_skip_shortcut_status(&state)? = ShortcutStatus::Error {
+                    shortcut: requested_shortcut.unwrap_or_default(),
+                    message,
+                };
+                patch.global_skip_shortcut = None;
             }
         }
     }
@@ -899,6 +963,9 @@ pub fn update_preferences(
         }
         if let Some(global_next_shortcut) = patch.global_next_shortcut {
             config.global_next_shortcut = global_next_shortcut;
+        }
+        if let Some(global_skip_shortcut) = patch.global_skip_shortcut {
+            config.global_skip_shortcut = global_skip_shortcut;
         }
         if let Some(online_directory) = patch.online_directory {
             config.online_directory = online_directory;
@@ -1514,7 +1581,13 @@ fn commit_scanned_state(
     }
     state.image_assets.prune_sources(&live_paths);
     persist(&state.state_file, &next_config)?;
-    let snapshot = build_state_from_scan(next_config.clone(), scan.clone(), shortcut_status(state)?);
+    let (shortcut_status, skip_shortcut_status) = shortcut_statuses(state)?;
+    let snapshot = build_state_from_scan(
+        next_config.clone(),
+        scan.clone(),
+        shortcut_status,
+        skip_shortcut_status,
+    );
     *lock_library_scan(state)? = Some(scan);
     *lock_config(state)? = next_config;
     app.emit("app://state-changed", &snapshot)
@@ -1546,7 +1619,13 @@ where
     );
     refresh_rotation_queue_for_config(&mut next_config, &scan.candidates);
     persist(&state.state_file, &next_config)?;
-    let snapshot = build_state_from_scan(next_config.clone(), scan.clone(), shortcut_status(state)?);
+    let (shortcut_status, skip_shortcut_status) = shortcut_statuses(state)?;
+    let snapshot = build_state_from_scan(
+        next_config.clone(),
+        scan.clone(),
+        shortcut_status,
+        skip_shortcut_status,
+    );
     *lock_library_scan(state)? = Some(scan);
     *lock_config(state)? = next_config;
     app.emit("app://state-changed", &snapshot)
@@ -1586,8 +1665,29 @@ fn lock_registered_shortcut(
         .map_err(|_| "全局快捷键注册状态不可用。".to_string())
 }
 
-fn shortcut_status(state: &RuntimeState) -> Result<ShortcutStatus, String> {
-    Ok(lock_shortcut_status(state)?.clone())
+fn lock_skip_shortcut_status(
+    state: &RuntimeState,
+) -> Result<std::sync::MutexGuard<'_, ShortcutStatus>, String> {
+    state
+        .skip_shortcut_status
+        .lock()
+        .map_err(|_| "跳过快捷键状态不可用。".to_string())
+}
+
+fn lock_registered_skip_shortcut(
+    state: &RuntimeState,
+) -> Result<std::sync::MutexGuard<'_, Option<String>>, String> {
+    state
+        .registered_skip_shortcut
+        .lock()
+        .map_err(|_| "跳过快捷键注册状态不可用。".to_string())
+}
+
+fn shortcut_statuses(state: &RuntimeState) -> Result<(ShortcutStatus, ShortcutStatus), String> {
+    Ok((
+        lock_shortcut_status(state)?.clone(),
+        lock_skip_shortcut_status(state)?.clone(),
+    ))
 }
 
 fn persist(path: &Path, config: &AppConfig) -> Result<(), String> {
@@ -1760,6 +1860,7 @@ fn build_state(config: AppConfig) -> AppState {
         config.clone(),
         collect_candidates(&config),
         ShortcutStatus::Disabled,
+        ShortcutStatus::Disabled,
     )
 }
 
@@ -1767,6 +1868,7 @@ fn build_state_from_scan(
     config: AppConfig,
     scan: LibraryScan,
     shortcut_status: ShortcutStatus,
+    skip_shortcut_status: ShortcutStatus,
 ) -> AppState {
     let online_storage_bytes = online_storage_bytes(&config);
     let preview_items = build_preview_items(&config, &scan);
@@ -1780,6 +1882,7 @@ fn build_state_from_scan(
         online_storage_bytes,
         global_shortcut_registered: matches!(shortcut_status, ShortcutStatus::Active { .. }),
         shortcut_status,
+        skip_shortcut_status,
     }
 }
 
@@ -2000,6 +2103,29 @@ fn delete_skipped_file(config: &mut AppConfig, file_path: &str) -> Result<(), St
         .retain(|path| !same_path(path, file_path));
     rescan_config(config);
     Ok(())
+}
+
+fn delete_all_skipped_files(config: &mut AppConfig) -> Result<(), String> {
+    let paths = config.skipped_paths.clone();
+    for path in paths {
+        delete_skipped_file(config, &path)?;
+    }
+    Ok(())
+}
+
+fn skip_current_wallpaper_config(config: &mut AppConfig) -> Result<(), String> {
+    let current = config
+        .current_path
+        .clone()
+        .ok_or_else(|| "There is no active wallpaper to skip.".to_string())?;
+    if !config
+        .skipped_paths
+        .iter()
+        .any(|path| same_path(path, &current))
+    {
+        config.skipped_paths.push(current);
+    }
+    switch_to_next_wallpaper(config)
 }
 
 fn toggle_favorite_path(config: &mut AppConfig, file_path: &str) -> Result<(), String> {
@@ -2461,6 +2587,29 @@ mod tests {
 
         assert!(!Path::new(&path).exists());
         assert!(config.skipped_paths.is_empty());
+    }
+
+    #[test]
+    fn deletes_all_skipped_files_and_removes_their_records() {
+        let paths = [
+            std::env::temp_dir().join(format!("zx-wallpaper-{}.jpg", Uuid::new_v4())),
+            std::env::temp_dir().join(format!("zx-wallpaper-{}.jpg", Uuid::new_v4())),
+        ];
+        for path in &paths {
+            fs::write(path, b"test wallpaper").unwrap();
+        }
+        let paths = paths.map(|path| path.to_string_lossy().into_owned());
+        let mut config = AppConfig {
+            skipped_paths: paths.to_vec(),
+            favorite_paths: paths.to_vec(),
+            ..AppConfig::default()
+        };
+
+        delete_all_skipped_files(&mut config).unwrap();
+
+        assert!(paths.iter().all(|path| !Path::new(path).exists()));
+        assert!(config.skipped_paths.is_empty());
+        assert!(config.favorite_paths.is_empty());
     }
 
     #[test]
