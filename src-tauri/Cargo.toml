@@ -1,6 +1,6 @@
 [package]
 name = "zx-wallpaper"
-version = "0.1.4"
+version = "0.1.5"
 description = "Windows local-first wallpaper manager"
 authors = ["ZX Wallpaper"]
 edition = "2021"
@@ -27,6 +27,7 @@ runtime = [
   "dep:thiserror",
   "dep:time",
   "dep:tokio",
+  "dep:trash",
   "dep:url",
   "dep:uuid",
   "dep:walkdir"
@@ -58,6 +59,7 @@ tauri-plugin-opener = { version = "2", optional = true }
 thiserror = { version = "2", optional = true }
 time = { version = "0.3", features = ["formatting"], optional = true }
 tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"], optional = true }
+trash = { version = "5", optional = true }
 url = { version = "2", optional = true }
 uuid = { version = "1", features = ["v4", "serde"], optional = true }
 walkdir = { version = "2", optional = true }

@@ -15,6 +15,7 @@ const state: AppState = {
   remainingPaths: [],
   skippedPaths: [],
   favoritePaths: [],
+  wallpaperHistory: [],
   globalNextShortcut: null,
   globalSkipShortcut: null,
   lastSwitchAt: null,

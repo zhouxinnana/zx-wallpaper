@@ -117,6 +117,7 @@ export interface AppConfig {
   remainingPaths: string[];
   skippedPaths: string[];
   favoritePaths: string[];
+  wallpaperHistory: string[];
   globalNextShortcut: string | null;
   globalSkipShortcut: string | null;
   lastSwitchAt: string | null;

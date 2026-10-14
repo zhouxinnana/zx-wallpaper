@@ -129,6 +129,8 @@ pub struct OnlineDownloadFailure {
     pub reason: String,
 }
 
+const WALLPAPER_HISTORY_LIMIT: usize = 20;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -156,6 +158,8 @@ pub struct AppConfig {
     pub skipped_paths: Vec<String>,
     #[serde(default)]
     pub favorite_paths: Vec<String>,
+    #[serde(default)]
+    pub wallpaper_history: Vec<String>,
     #[serde(default)]
     pub global_next_shortcut: Option<String>,
     #[serde(default)]
@@ -191,6 +195,7 @@ impl Default for AppConfig {
             remaining_paths: Vec::new(),
             skipped_paths: Vec::new(),
             favorite_paths: Vec::new(),
+            wallpaper_history: Vec::new(),
             global_next_shortcut: None,
             global_skip_shortcut: None,
             last_switch_at: None,
@@ -1442,10 +1447,17 @@ pub async fn delete_online_image(
             .ok_or_else(|| "该在线图片已不存在。".to_string())?
     };
     let path_to_delete = path.clone();
-    tauri::async_runtime::spawn_blocking(move || fs::remove_file(path_to_delete))
-        .await
-        .map_err(|error| format!("删除在线图片任务中断: {error}"))?
-        .map_err(|error| format!("无法删除在线图片: {error}"))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if Path::new(&path_to_delete).exists() {
+            trash::delete(&path_to_delete)
+                .map_err(|error| std::io::Error::other(error.to_string()))
+        } else {
+            Ok(())
+        }
+    })
+    .await
+    .map_err(|error| format!("删除在线图片任务中断: {error}"))?
+    .map_err(|error| format!("无法删除在线图片: {error}"))?;
     state.image_assets.purge_source(&path);
     mutate_without_rescan(&app, &state, move |config| {
         config.online_images.retain(|image| image.id != image_id);
@@ -2082,7 +2094,19 @@ fn open_folder_path<'a>(config: &'a AppConfig, folder_id: &str) -> Option<&'a st
         .map(|folder| folder.path.as_str())
 }
 
+fn remove_file_to_trash(file_path: &str) -> std::io::Result<()> {
+    trash::delete(file_path).map_err(|error| std::io::Error::other(error.to_string()))
+}
+
 fn delete_skipped_file(config: &mut AppConfig, file_path: &str) -> Result<(), String> {
+    delete_skipped_file_with(config, file_path, remove_file_to_trash)
+}
+
+fn delete_skipped_file_with(
+    config: &mut AppConfig,
+    file_path: &str,
+    remove_file: impl Fn(&str) -> std::io::Result<()>,
+) -> Result<(), String> {
     if !config
         .skipped_paths
         .iter()
@@ -2090,10 +2114,10 @@ fn delete_skipped_file(config: &mut AppConfig, file_path: &str) -> Result<(), St
     {
         return Ok(());
     }
-    match fs::remove_file(file_path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("无法删除已跳过图片: {error}")),
+    if Path::new(file_path).exists() {
+        if let Err(error) = remove_file(file_path) {
+            return Err(format!("无法删除已跳过图片: {error}"));
+        }
     }
     config
         .skipped_paths
@@ -2106,9 +2130,16 @@ fn delete_skipped_file(config: &mut AppConfig, file_path: &str) -> Result<(), St
 }
 
 fn delete_all_skipped_files(config: &mut AppConfig) -> Result<(), String> {
+    delete_all_skipped_files_with(config, remove_file_to_trash)
+}
+
+fn delete_all_skipped_files_with(
+    config: &mut AppConfig,
+    remove_file: impl Fn(&str) -> std::io::Result<()> + Copy,
+) -> Result<(), String> {
     let paths = config.skipped_paths.clone();
     for path in paths {
-        delete_skipped_file(config, &path)?;
+        delete_skipped_file_with(config, &path, remove_file)?;
     }
     Ok(())
 }
@@ -2155,9 +2186,28 @@ fn select_online_wallpaper(config: &mut AppConfig, image_id: &str) -> Result<Str
         .find(|image| image.id == image_id)
         .map(|image| image.local_path.clone())
         .ok_or_else(|| "该在线图片已不存在。".to_string())?;
+    record_wallpaper_history(config);
     config.current_path = Some(path.clone());
     config.paused = true;
     Ok(path)
+}
+
+fn record_wallpaper_history(config: &mut AppConfig) {
+    let Some(previous) = config.current_path.clone() else {
+        return;
+    };
+    if config
+        .wallpaper_history
+        .first()
+        .is_some_and(|path| same_path(path, &previous))
+    {
+        return;
+    }
+    config
+        .wallpaper_history
+        .retain(|path| !same_path(path, &previous));
+    config.wallpaper_history.insert(0, previous);
+    config.wallpaper_history.truncate(WALLPAPER_HISTORY_LIMIT);
 }
 
 fn select_wallpaper_path(config: &mut AppConfig, file_path: &str) -> Result<(), String> {
@@ -2197,6 +2247,7 @@ fn select_wallpaper_path(config: &mut AppConfig, file_path: &str) -> Result<(), 
     }
 
     set_desktop_wallpaper(Path::new(&selected_path), &config.display_mode)?;
+    record_wallpaper_history(config);
     config.current_path = Some(selected_path.clone());
     config
         .remaining_paths
@@ -2215,6 +2266,7 @@ fn switch_to_next_wallpaper(config: &mut AppConfig) -> Result<(), String> {
     };
 
     set_desktop_wallpaper(Path::new(&next_path), &config.display_mode)?;
+    record_wallpaper_history(config);
     config.current_path = Some(next_path);
     config.remaining_paths = remaining_paths;
     config.last_switch_at = Some(online::now_rfc3339());
@@ -2583,7 +2635,7 @@ mod tests {
             ..AppConfig::default()
         };
 
-        delete_skipped_file(&mut config, &path).unwrap();
+        delete_skipped_file_with(&mut config, &path, |path| fs::remove_file(path)).unwrap();
 
         assert!(!Path::new(&path).exists());
         assert!(config.skipped_paths.is_empty());
@@ -2605,11 +2657,65 @@ mod tests {
             ..AppConfig::default()
         };
 
-        delete_all_skipped_files(&mut config).unwrap();
+        delete_all_skipped_files_with(&mut config, |path| fs::remove_file(path)).unwrap();
 
         assert!(paths.iter().all(|path| !Path::new(path).exists()));
         assert!(config.skipped_paths.is_empty());
         assert!(config.favorite_paths.is_empty());
+    }
+
+    #[test]
+    fn missing_skipped_files_are_removed_from_records_without_trash_roundtrip() {
+        let path = std::env::temp_dir()
+            .join(format!("zx-wallpaper-missing-{}.jpg", Uuid::new_v4()))
+            .to_string_lossy()
+            .into_owned();
+        let mut config = AppConfig {
+            skipped_paths: vec![path.clone()],
+            ..AppConfig::default()
+        };
+
+        delete_skipped_file(&mut config, &path).unwrap();
+
+        assert!(config.skipped_paths.is_empty());
+    }
+
+    #[test]
+    fn wallpaper_history_records_previous_wallpapers_in_order() {
+        let mut config = AppConfig {
+            current_path: Some("D:\\Wallpapers\\a.jpg".into()),
+            ..AppConfig::default()
+        };
+
+        record_wallpaper_history(&mut config);
+        config.current_path = Some("D:\\Wallpapers\\b.jpg".into());
+        record_wallpaper_history(&mut config);
+        config.current_path = Some("D:\\Wallpapers\\c.jpg".into());
+
+        assert_eq!(
+            config.wallpaper_history,
+            vec!["D:\\Wallpapers\\b.jpg", "D:\\Wallpapers\\a.jpg"]
+        );
+    }
+
+    #[test]
+    fn wallpaper_history_deduplicates_and_caps_at_limit() {
+        let mut config = AppConfig::default();
+
+        for index in 0..25 {
+            config.current_path = Some(format!("D:\\Wallpapers\\{index}.jpg"));
+            record_wallpaper_history(&mut config);
+        }
+
+        assert_eq!(config.wallpaper_history.len(), WALLPAPER_HISTORY_LIMIT);
+        assert_eq!(
+            config.wallpaper_history.first().map(String::as_str),
+            Some("D:\\Wallpapers\\24.jpg")
+        );
+        assert_eq!(
+            config.wallpaper_history.last().map(String::as_str),
+            Some("D:\\Wallpapers\\5.jpg")
+        );
     }
 
     #[test]

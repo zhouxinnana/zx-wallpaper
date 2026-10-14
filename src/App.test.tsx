@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -69,7 +69,48 @@ describe("ZX Wallpaper application shell", () => {
     expect(toggleFavorite).toHaveBeenCalledWith("D:\\Wallpapers\\current.jpg");
   });
 
-  it("deletes all skipped images", async () => {
+  it("filters the skipped list by file name", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const getState = runtime.getState;
+    runtime.getState = async () => ({
+      ...(await getState()),
+      skippedPaths: ["D:\\Wallpapers\\sunset.jpg", "D:\\Wallpapers\\forest.jpg"],
+    });
+    render(<App runtime={runtime} />);
+
+    expect(await screen.findByText("sunset.jpg")).toBeTruthy();
+    const filter = screen.getByLabelText("筛选已跳过图片");
+    await user.type(filter, "sun");
+
+    expect(screen.getByText("sunset.jpg")).toBeTruthy();
+    expect(screen.queryByText("forest.jpg")).toBeNull();
+    await user.clear(filter);
+    await user.type(filter, "nomatch");
+    expect(screen.getByText("没有匹配的图片")).toBeTruthy();
+  });
+
+  it("lists recent wallpapers and rolls back from the history strip", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const getState = runtime.getState;
+    runtime.getState = async () => ({
+      ...(await getState()),
+      currentPath: "D:\\Wallpapers\\current.jpg",
+      wallpaperHistory: ["D:\\Wallpapers\\current.jpg", "D:\\Wallpapers\\old-01.jpg", "D:\\Wallpapers\\old-02.jpg"],
+    });
+    const selectWallpaper = vi.fn(() => runtime.getState());
+    runtime.selectWallpaper = selectWallpaper;
+    render(<App runtime={runtime} />);
+
+    expect(await screen.findByText("最近壁纸")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "回到 current.jpg" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "回到 old-01.jpg" }));
+
+    expect(selectWallpaper).toHaveBeenCalledWith("D:\\Wallpapers\\old-01.jpg");
+  });
+
+  it("deletes all skipped images only after confirmation", async () => {
     const user = userEvent.setup();
     const runtime = createOnlineGalleryRuntime(0);
     const getState = runtime.getState;
@@ -82,8 +123,45 @@ describe("ZX Wallpaper application shell", () => {
     render(<App runtime={runtime} />);
 
     await user.click(await screen.findByRole("button", { name: "全部删除" }));
+    expect(deleteAllSkipped).not.toHaveBeenCalled();
+
+    const dialog = screen.getByRole("alertdialog", { name: "删除全部已跳过图片" });
+    expect(dialog.textContent).toContain("2 张图片");
+
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(deleteAllSkipped).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "全部删除" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "全部删除" }));
 
     expect(deleteAllSkipped).toHaveBeenCalledOnce();
+    expect((await screen.findByRole("status")).textContent).toContain("已跳过图片已全部移入回收站");
+  });
+
+  it("offers file deletion inside the viewer for skipped images", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const getState = runtime.getState;
+    runtime.getState = async () => ({
+      ...(await getState()),
+      skippedPaths: ["D:\\Wallpapers\\skipped-01.jpg"],
+      currentPath: "D:\\Wallpapers\\current.jpg",
+    });
+    const deleteSkippedPath = vi.fn(() => runtime.getState());
+    runtime.deleteSkippedPath = deleteSkippedPath;
+    render(<App runtime={runtime} />);
+
+    expect(screen.queryByRole("button", { name: "删除 skipped-01.jpg" })).toBeNull();
+    await user.click(await screen.findByRole("button", { name: "查看原图 skipped-01.jpg" }));
+    await user.click(await screen.findByRole("button", { name: "删除文件" }));
+
+    const dialog = screen.getByRole("alertdialog", { name: "删除图片文件" });
+    expect(dialog.textContent).toContain("移入系统回收站");
+    await user.click(within(dialog).getByRole("button", { name: "删除文件" }));
+
+    expect(deleteSkippedPath).toHaveBeenCalledWith("D:\\Wallpapers\\skipped-01.jpg");
+    expect(await screen.findByRole("status").then((status) => status.textContent)).toContain("已移入回收站");
   });
 
   it("upgrades the current preview from a grid asset to a hero asset", async () => {
@@ -509,6 +587,7 @@ function createOnlineGalleryRuntime(
     remainingPaths: [],
     skippedPaths: [],
     favoritePaths: [],
+    wallpaperHistory: [],
     globalNextShortcut: null,
     globalSkipShortcut: null,
     lastSwitchAt: null,

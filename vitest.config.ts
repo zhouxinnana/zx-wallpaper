@@ -9,6 +9,6 @@ export default defineConfig({
       "src/**/*.test.ts",
       "src/**/*.test.tsx",
     ],
-    pool: "threads",
+    pool: "vmThreads",
   },
 });
