@@ -240,11 +240,6 @@ export default function App({ runtime }: { runtime?: DesktopRuntime }) {
           <span>ZX Wallpaper</span>
           <span className="titlebar-version">v0.1.5</span>
         </div>
-        <div className="window-actions" aria-label="窗口控制">
-          <button type="button" aria-label="最小化窗口" disabled>−</button>
-          <button type="button" aria-label="最大化窗口" disabled>□</button>
-          <button type="button" aria-label="关闭窗口" disabled>×</button>
-        </div>
       </header>
       <div className="app-body">
         <aside className="prototype-sidebar">

@@ -21,9 +21,6 @@ button:disabled { cursor: not-allowed; }
 .titlebar-brand { display: flex; align-items: center; gap: 8px; color: #8da0bc; font-size: 11px; font-weight: 500; }
 .zx-mark { width: 18px; height: 18px; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, #3b82f6, #06b6d4); border-radius: 3px; font: 800 8px "JetBrains Mono", monospace; }
 .titlebar-version { color: #66809f; font: 10px "JetBrains Mono", monospace; }
-.window-actions { display: flex; height: 30px; }
-.window-actions button { width: 40px; border: 0; background: transparent; color: #66809f; font-size: 15px; opacity: 1; }
-.window-actions button:last-child { color: #ef4444; }
 .app-body { min-height: 0; flex: 1; display: flex; }
 
 .prototype-sidebar { width: 168px; min-width: 168px; display: flex; flex-direction: column; background: #060a14; border-right: 1px solid #1a2740; }
