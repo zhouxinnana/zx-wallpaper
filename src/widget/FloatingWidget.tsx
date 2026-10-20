@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Heart, Image as ImageIcon, Trash2 } from "lucide-react";
-import type { AppState } from "../runtime/types";
+import { ChevronLeft, ChevronRight, Heart, Image as ImageIcon, Pause, Play, SkipForward, Trash2 } from "lucide-react";
+import type { AppState, DesktopRuntime } from "../runtime/types";
 import { tauriRuntime } from "../runtime/tauri-runtime";
 import { pathName, samePath } from "../shared/paths";
 import { invoke } from "@tauri-apps/api/core";
@@ -61,7 +61,8 @@ function persistLayout(layout: SavedLayout) {
   }
 }
 
-export default function FloatingWidget() {
+export default function FloatingWidget({ runtime }: { runtime?: DesktopRuntime }) {
+  const [api] = useState(() => runtime ?? tauriRuntime);
   const [state, setState] = useState<AppState | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [anchor, setAnchor] = useState<Anchor>("right");
@@ -96,7 +97,7 @@ export default function FloatingWidget() {
     let active = true;
     let unsubscribe = () => {};
 
-    void tauriRuntime.getState().then(
+    void api.getState().then(
       (next) => {
         if (active) setState(next);
       },
@@ -104,7 +105,7 @@ export default function FloatingWidget() {
         if (active) setError("无法读取壁纸状态");
       },
     );
-    void tauriRuntime.onStateChanged((next) => {
+    void api.onStateChanged((next) => {
       if (active) setState(next);
     }).then((stop) => {
       if (!active) {
@@ -121,6 +122,7 @@ export default function FloatingWidget() {
   }, []);
 
   const currentPath = state?.currentPath ?? null;
+  const paused = state?.paused ?? false;
   const isFavorite = Boolean(currentPath) && state!.favoritePaths.some((path) => samePath(path, currentPath!));
   const previousPath = state?.wallpaperHistory.find((path) => !samePath(path, currentPath ?? "")) ?? null;
 
@@ -128,7 +130,7 @@ export default function FloatingWidget() {
     let active = true;
     setThumbnail(null);
     if (!currentPath) return () => { active = false; };
-    void tauriRuntime.getImageAsset(currentPath, "grid").then((asset) => {
+    void api.getImageAsset(currentPath, "grid").then((asset) => {
       if (active && asset) setThumbnail(asset.src);
     });
     return () => { active = false; };
@@ -294,12 +296,17 @@ export default function FloatingWidget() {
 
   const goPrevious = () => {
     if (!previousPath) return;
-    void run(() => tauriRuntime.selectWallpaper(previousPath));
+    void run(() => api.selectWallpaper(previousPath));
   };
-  const goNext = () => void run(() => tauriRuntime.nextWallpaper());
+  const goNext = () => void run(() => api.nextWallpaper());
   const toggleFavorite = () => {
     if (!currentPath) return;
-    void run(() => tauriRuntime.toggleFavorite(currentPath));
+    void run(() => api.toggleFavorite(currentPath));
+  };
+  const togglePaused = () => void run(() => api.togglePaused());
+  const skipCurrent = () => {
+    if (!currentPath) return;
+    void run(() => api.skipCurrentWallpaper());
   };
   const confirmDelete = () => {
     setConfirming(false);
@@ -368,9 +375,23 @@ export default function FloatingWidget() {
               <span className="widget-btn"><ChevronLeft size={16} /></span>
               <small>上一张</small>
             </button>
+            <button className="widget-action" type="button" aria-label={paused ? "恢复切换" : "暂停切换"} onClick={togglePaused}>
+              <span className="widget-btn">{paused ? <Play size={15} /> : <Pause size={15} />}</span>
+              <small>{paused ? "恢复" : "暂停"}</small>
+            </button>
             <button className="widget-action" type="button" aria-label="切换下一张壁纸" onClick={goNext}>
               <span className="widget-btn"><ChevronRight size={16} /></span>
               <small>下一张</small>
+            </button>
+            <button
+              className="widget-action"
+              type="button"
+              aria-label="跳过当前壁纸"
+              disabled={!currentPath}
+              onClick={skipCurrent}
+            >
+              <span className="widget-btn"><SkipForward size={15} /></span>
+              <small>跳过</small>
             </button>
             <button
               className={isFavorite ? "widget-action is-fav" : "widget-action"}
