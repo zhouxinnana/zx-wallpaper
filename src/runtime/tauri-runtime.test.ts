@@ -25,6 +25,7 @@ const state: AppState = {
   onlineDirectory: null,
   onlineStorageLimitGb: 5,
   onlineMinimumResolution: 1920,
+  widgetLayout: { docked: "right", x: null, y: null },
   availableCount: 0,
   previewUrl: null,
   previewItems: [],

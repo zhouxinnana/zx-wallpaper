@@ -1,4 +1,6 @@
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
+
+use crate::state::{lock_config, mutate_without_rescan, AppState, RuntimeState, WidgetLayout};
 
 const WIDGET_COLLAPSED_SIZE: (f64, f64) = (36.0, 132.0);
 const WIDGET_EXPANDED_SIZE: (f64, f64) = (248.0, 272.0);
@@ -18,15 +20,37 @@ fn widget_monitor_frame(window: &tauri::WebviewWindow) -> Option<(f64, f64, f64,
     ))
 }
 
-/// 启动兜底：贴主显示器右缘垂直居中。
-pub(crate) fn position_floating_widget(app: &AppHandle, expanded: bool) {
+/// 启动定位：按已保存的浮窗布局恢复（吸附边含纵向位置，或自由悬浮位置）；
+/// 无有效布局时兜底贴主显示器右缘垂直居中。
+pub(crate) fn position_floating_widget(app: &AppHandle) {
     let Some(window) = app.get_webview_window("floating-widget") else {
         return;
     };
-    let (_, height) = if expanded { WIDGET_EXPANDED_SIZE } else { WIDGET_COLLAPSED_SIZE };
-    let y_override = widget_monitor_frame(&window)
+    let layout = match app.try_state::<RuntimeState>() {
+        Some(state) => lock_config(&state)
+            .map(|config| config.widget_layout.clone())
+            .unwrap_or_default(),
+        None => WidgetLayout::default(),
+    };
+    let docked_side = layout
+        .docked
+        .as_deref()
+        .filter(|side| matches!(*side, "left" | "right"));
+    if let Some(side) = docked_side {
+        let _ = set_widget_geometry(&window, false, side, true, layout.y);
+    } else if let (Some(x), Some(y)) = (layout.x, layout.y) {
+        let _ = apply_free_position(&window, x, y);
+    } else {
+        position_fallback(&window);
+    }
+}
+
+/// 启动兜底：贴主显示器右缘垂直居中。
+fn position_fallback(window: &tauri::WebviewWindow) {
+    let (_, height) = WIDGET_COLLAPSED_SIZE;
+    let y_override = widget_monitor_frame(window)
         .map(|(_scale, _ox, oy, _sw, sh)| oy + (sh - height) / 2.0);
-    let _ = set_widget_geometry(&window, expanded, "right", true, y_override);
+    let _ = set_widget_geometry(window, false, "right", true, y_override);
 }
 
 /// 应用浮窗几何。`anchor` 是感应条/小球在窗口内的贴靠侧；
@@ -79,7 +103,11 @@ pub fn widget_set_expanded(
 /// 仅在当前显示器范围内做温和钳制。
 #[tauri::command]
 pub fn widget_set_free_position(window: tauri::WebviewWindow, x: f64, y: f64) -> Result<(), String> {
-    if let Some((scale, ox, oy, screen_w, screen_h)) = widget_monitor_frame(&window) {
+    apply_free_position(&window, x, y)
+}
+
+fn apply_free_position(window: &tauri::WebviewWindow, x: f64, y: f64) -> Result<(), String> {
+    if let Some((scale, ox, oy, screen_w, screen_h)) = widget_monitor_frame(window) {
         let size = window.outer_size().map_err(|error| error.to_string())?;
         let width = (size.width as f64 / scale).max(WIDGET_COLLAPSED_SIZE.0);
         let height = (size.height as f64 / scale).max(WIDGET_COLLAPSED_SIZE.1);
@@ -90,4 +118,24 @@ pub fn widget_set_free_position(window: tauri::WebviewWindow, x: f64, y: f64) ->
         let _ = window.set_position(tauri::LogicalPosition::new(x, y));
     }
     Ok(())
+}
+
+/// 读取已持久化的浮窗布局（吸附边 / 自由位置）。
+#[tauri::command]
+pub fn get_widget_layout(state: State<'_, RuntimeState>) -> Result<WidgetLayout, String> {
+    let config = lock_config(&state)?;
+    Ok(config.widget_layout.clone())
+}
+
+/// 拖拽落点后持久化浮窗布局；不触发库重扫。
+#[tauri::command]
+pub fn set_widget_layout(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    layout: WidgetLayout,
+) -> Result<AppState, String> {
+    mutate_without_rescan(&app, &state, |config| {
+        config.widget_layout = layout;
+        Ok(())
+    })
 }

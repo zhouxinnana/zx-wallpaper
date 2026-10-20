@@ -6,7 +6,7 @@ use std::{
         atomic::AtomicBool,
         Mutex,
     },
-    time::Instant,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -116,6 +116,14 @@ pub struct OnlineDownloadFailure {
     pub reason: String,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WidgetLayout {
+    pub docked: Option<String>,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -163,6 +171,8 @@ pub struct AppConfig {
     pub online_storage_limit_gb: u8,
     #[serde(default = "default_minimum_resolution")]
     pub online_minimum_resolution: u16,
+    #[serde(default)]
+    pub widget_layout: WidgetLayout,
 }
 
 impl Default for AppConfig {
@@ -190,6 +200,7 @@ impl Default for AppConfig {
             online_directory: None,
             online_storage_limit_gb: default_storage_limit(),
             online_minimum_resolution: default_minimum_resolution(),
+            widget_layout: WidgetLayout::default(),
         }
     }
 }
@@ -275,14 +286,32 @@ impl RuntimeState {
         let directory = app.path().app_config_dir().map_err(|error| {
             format!("Unable to resolve the application config directory: {error}")
         })?;
-        fs::create_dir_all(&directory).map_err(|error| {
+        Self::load_from_dir(&directory)
+    }
+
+    pub(crate) fn load_from_dir(directory: &Path) -> Result<Self, String> {
+        fs::create_dir_all(directory).map_err(|error| {
             format!("Unable to create the application config directory: {error}")
         })?;
 
         let state_file = directory.join(STATE_FILE_NAME);
         let mut config = match fs::read_to_string(&state_file) {
-            Ok(contents) => serde_json::from_str(&contents)
-                .map_err(|error| format!("Unable to read saved wallpaper settings: {error}"))?,
+            Ok(contents) => match serde_json::from_str(&contents) {
+                Ok(config) => config,
+                Err(error) => {
+                    // 解析失败：把损坏文件改名备份后按默认配置重建，避免一次损坏让应用无法启动。
+                    let backup = directory.join(format!(
+                        "{STATE_FILE_NAME}.corrupt-{}",
+                        corrupt_backup_suffix()
+                    ));
+                    let _ = fs::rename(&state_file, &backup);
+                    eprintln!(
+                        "壁纸状态文件解析失败，已备份为 {} 并按默认配置重建：{error}",
+                        backup.display()
+                    );
+                    AppConfig::default()
+                }
+            },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => AppConfig::default(),
             Err(error) => return Err(format!("Unable to read saved wallpaper settings: {error}")),
         };
@@ -302,6 +331,14 @@ impl RuntimeState {
             state_file,
         })
     }
+}
+
+/// 损坏备份文件名后缀：Unix 毫秒时间戳（文件名安全，无需额外依赖）。
+fn corrupt_backup_suffix() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis().to_string())
+        .unwrap_or_else(|_| "unknown".to_string())
 }
 
 #[tauri::command]
@@ -576,4 +613,74 @@ fn default_storage_limit() -> u8 {
 
 fn default_minimum_resolution() -> u16 {
     1920
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "zx-wallpaper-state-test-{}-{label}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn corrupt_backups(directory: &Path) -> Vec<PathBuf> {
+        fs::read_dir(directory)
+            .expect("config directory should exist")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().contains(".corrupt-"))
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn load_from_dir_recovers_with_default_config_when_state_file_is_corrupt() {
+        let directory = unique_temp_dir("corrupt");
+        fs::create_dir_all(&directory).expect("create temp config dir");
+        fs::write(directory.join(STATE_FILE_NAME), "\u{0}\u{0}\u{0}")
+            .expect("write corrupt state file");
+
+        let state = RuntimeState::load_from_dir(&directory).expect("load should recover");
+
+        let config = state.config.lock().expect("config lock");
+        assert!(config.folders.is_empty());
+        assert_eq!(config.interval_minutes, default_interval_minutes());
+        assert_eq!(config.widget_layout, WidgetLayout::default());
+        drop(config);
+
+        let backups = corrupt_backups(&directory);
+        assert_eq!(backups.len(), 1, "corrupt file should be renamed to a backup");
+
+        drop(state);
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn load_from_dir_uses_defaults_without_backup_when_state_file_is_missing() {
+        let directory = unique_temp_dir("missing");
+        fs::create_dir_all(&directory).expect("create temp config dir");
+
+        let state = RuntimeState::load_from_dir(&directory).expect("load should succeed");
+
+        let config = state.config.lock().expect("config lock");
+        assert!(config.folders.is_empty());
+        assert_eq!(config.interval_minutes, default_interval_minutes());
+        drop(config);
+
+        assert!(
+            corrupt_backups(&directory).is_empty(),
+            "no backup should be created when the state file is simply absent"
+        );
+
+        drop(state);
+        let _ = fs::remove_dir_all(&directory);
+    }
 }

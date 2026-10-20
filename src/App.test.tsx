@@ -623,6 +623,7 @@ function createOnlineGalleryRuntime(
     onlineDirectory: "D:\\ZX Wallpaper\\Online",
     onlineStorageLimitGb: 5,
     onlineMinimumResolution: 1920,
+    widgetLayout: { docked: "right", x: null, y: null },
     availableCount: 0,
     previewUrl: null,
     previewItems: [
@@ -664,6 +665,8 @@ function createOnlineGalleryRuntime(
     selectOnlineDirectory: unchanged,
     revealOnlineImage: unchanged,
     revealWallpaper: () => Promise.resolve(),
+    getWidgetLayout: () => Promise.resolve(state.widgetLayout),
+    setWidgetLayout: unchanged,
     onStateChanged: () => Promise.resolve(() => {}),
   };
 }

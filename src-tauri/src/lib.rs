@@ -36,7 +36,7 @@ pub fn run() {
                 .map_err(std::io::Error::other)?;
             system::start_background_tasks(app.handle().clone());
             system::start_directory_watcher(app.handle().clone());
-            widget::position_floating_widget(&app.handle(), false);
+            widget::position_floating_widget(&app.handle());
             setup_tray(&app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
@@ -81,6 +81,8 @@ pub fn run() {
             library::prewarm_image_assets,
             widget::widget_set_expanded,
             widget::widget_set_free_position,
+            widget::get_widget_layout,
+            widget::set_widget_layout,
             wallpaper::delete_current_wallpaper,
         ])
         .run(tauri::generate_context!())

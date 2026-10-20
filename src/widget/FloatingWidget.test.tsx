@@ -1,10 +1,15 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import FloatingWidget from "./FloatingWidget";
 import type { AppState, DesktopRuntime } from "../runtime/types";
 
 afterEach(cleanup);
+
+// 拖拽路径会调用 setPointerCapture，测试环境补一个空实现。
+if (!HTMLElement.prototype.setPointerCapture) {
+  HTMLElement.prototype.setPointerCapture = () => {};
+}
 
 describe("floating widget pause and skip actions", () => {
   it("shows the pause action while auto switching is running and calls togglePaused", async () => {
@@ -87,6 +92,23 @@ describe("floating widget pause and skip actions", () => {
     const pauseButton = screen.getByRole("button", { name: "暂停切换" });
     expect(pauseButton.hasAttribute("disabled")).toBe(false);
   });
+
+  it("persists the drop position through set_widget_layout after a free drag", () => {
+    Object.defineProperty(window.screen, "width", { configurable: true, value: 1024 });
+    const state = createWidgetState();
+    const runtime = createWidgetRuntime(state);
+    const setWidgetLayout = vi.fn(() => Promise.resolve(state));
+    runtime.setWidgetLayout = setWidgetLayout;
+    render(<FloatingWidget runtime={runtime} />);
+
+    const strip = screen.getByRole("button", { name: /壁纸速控浮窗：按住拖动/ });
+    fireEvent.pointerDown(strip, { pointerId: 1, button: 0, screenX: 120, screenY: 120 });
+    fireEvent.pointerMove(strip, { pointerId: 1, screenX: 180, screenY: 140 });
+    fireEvent.pointerUp(strip, { pointerId: 1, screenX: 180, screenY: 140 });
+
+    // 光标偏移被换算成窗口左上角的全局逻辑坐标。
+    expect(setWidgetLayout).toHaveBeenCalledWith({ docked: null, x: 60, y: 20 });
+  });
 });
 
 function createWidgetState(overrides: Partial<AppState> = {}): AppState {
@@ -113,6 +135,7 @@ function createWidgetState(overrides: Partial<AppState> = {}): AppState {
     onlineDirectory: null,
     onlineStorageLimitGb: 5,
     onlineMinimumResolution: 1920,
+    widgetLayout: { docked: "right", x: null, y: null },
     availableCount: 0,
     previewUrl: null,
     previewItems: [],
@@ -154,6 +177,8 @@ function createWidgetRuntime(state: AppState): DesktopRuntime {
     selectOnlineDirectory: unchanged,
     revealOnlineImage: unchanged,
     revealWallpaper: () => Promise.resolve(),
+    getWidgetLayout: () => Promise.resolve({ docked: "right", x: null, y: null }),
+    setWidgetLayout: unchanged,
     onStateChanged: () => Promise.resolve(() => {}),
   };
 }

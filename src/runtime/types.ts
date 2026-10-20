@@ -104,6 +104,12 @@ export interface ImageAsset {
   status: "ready";
 }
 
+export interface WidgetLayout {
+  docked: string | null;
+  x: number | null;
+  y: number | null;
+}
+
 export interface AppConfig {
   folders: WallpaperFolder[];
   intervalMinutes: number;
@@ -127,6 +133,7 @@ export interface AppConfig {
   onlineDirectory: string | null;
   onlineStorageLimitGb: 1 | 5 | 10 | 20;
   onlineMinimumResolution: 1920 | 2560 | 3840;
+  widgetLayout: WidgetLayout;
 }
 
 export interface AppState extends AppConfig {
@@ -167,5 +174,7 @@ export interface DesktopRuntime {
   selectOnlineDirectory(): Promise<AppState>;
   revealOnlineImage(imageId: string): Promise<AppState>;
   revealWallpaper(filePath: string): Promise<void>;
+  getWidgetLayout(): Promise<WidgetLayout>;
+  setWidgetLayout(layout: WidgetLayout): Promise<AppState>;
   onStateChanged(listener: (state: AppState) => void): Promise<() => void>;
 }

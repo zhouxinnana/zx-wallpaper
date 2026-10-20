@@ -6,6 +6,7 @@ import type {
   DesktopRuntime,
   OnlineSource,
   WallpaperFolder,
+  WidgetLayout,
 } from "./types";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -55,6 +56,8 @@ export function createTauriRuntime(bindings: TauriBindings): DesktopRuntime {
     selectOnlineDirectory: () => command("select_online_directory"),
     revealOnlineImage: (imageId) => command("reveal_online_image", { imageId }),
     revealWallpaper: (filePath) => command("reveal_wallpaper", { filePath }),
+    getWidgetLayout: () => command("get_widget_layout"),
+    setWidgetLayout: (layout: WidgetLayout) => command("set_widget_layout", { layout }),
     onStateChanged: (listener) =>
       bindings.listen<AppState>("app://state-changed", ({ payload }) =>
         listener(payload),
@@ -67,4 +70,4 @@ export const tauriRuntime = createTauriRuntime({
   listen: tauriListen,
 });
 
-export type { AppConfig, AppState, DesktopRuntime, OnlineSource, WallpaperFolder };
+export type { AppConfig, AppState, DesktopRuntime, OnlineSource, WallpaperFolder, WidgetLayout };

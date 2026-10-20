@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Heart, Image as ImageIcon, Pause, Play, SkipForward, Trash2 } from "lucide-react";
-import type { AppState, DesktopRuntime } from "../runtime/types";
+import type { AppState, DesktopRuntime, WidgetLayout } from "../runtime/types";
 import { tauriRuntime } from "../runtime/tauri-runtime";
 import { pathName, samePath } from "../shared/paths";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,11 +11,8 @@ const EDGE_SNAP_PX = 28;
 const DRAG_THRESHOLD_PX = 4;
 const WIDGET_CARD_W = 248;
 const WIDGET_STRIP_W = 36;
-const STORAGE_KEY = "zx-widget-layout-v1";
 
 type Anchor = "left" | "right";
-
-type SavedLayout = { docked: Anchor | null; x?: number; y?: number };
 
 interface DragSession {
   pointerId: number;
@@ -38,6 +35,11 @@ function setFreePosition(x: number, y: number) {
   return invoke("widget_set_free_position", { x, y }).catch(() => {});
 }
 
+/** 把拖拽落点写回后端持久化；失败不打断交互（下次启动回退默认位置）。 */
+function persistLayout(api: DesktopRuntime, layout: WidgetLayout) {
+  void api.setWidgetLayout(layout).catch(() => {});
+}
+
 /** 当前显示器左缘（全局坐标）；类型库未收录 availLeft，运行时安全读取。 */
 function screenLeft(): number {
   const extended = window.screen as Screen & { availLeft?: number };
@@ -51,14 +53,6 @@ function edgeSide(clientScreenX: number): Anchor | null {
   if (clientScreenX <= left + EDGE_SNAP_PX) return "left";
   if (clientScreenX >= right - EDGE_SNAP_PX) return "right";
   return null;
-}
-
-function persistLayout(layout: SavedLayout) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(layout));
-  } catch {
-    /* 忽略持久化失败 */
-  }
 }
 
 export default function FloatingWidget({ runtime }: { runtime?: DesktopRuntime }) {
@@ -136,23 +130,26 @@ export default function FloatingWidget({ runtime }: { runtime?: DesktopRuntime }
     return () => { active = false; };
   }, [currentPath]);
 
-  // 恢复上次布局：吸附边（含纵向位置）或自由悬浮位置。
+  // 启动时从后端同步布局状态；几何定位由 Rust 侧启动时完成，这里只恢复渲染状态。
   useEffect(() => {
-    let saved: SavedLayout | null = null;
-    try {
-      saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as SavedLayout | null;
-    } catch {
-      saved = null;
-    }
-    if (!saved || typeof saved !== "object") return;
-    if (saved.docked === "left" || saved.docked === "right") {
-      applyDocked(saved.docked);
-      applyAnchor(saved.docked);
-      void setWidgetGeometry(false, saved.docked, true, typeof saved.y === "number" ? saved.y : null);
-    } else if (typeof saved.x === "number" && typeof saved.y === "number") {
-      applyDocked(null);
-      void setFreePosition(saved.x, saved.y);
-    }
+    let active = true;
+    void api.getWidgetLayout().then(
+      (layout) => {
+        if (!active) return;
+        if (layout.docked === "left" || layout.docked === "right") {
+          applyDocked(layout.docked);
+          applyAnchor(layout.docked);
+        } else if (typeof layout.x === "number" && typeof layout.y === "number") {
+          applyDocked(null);
+        }
+      },
+      () => {
+        /* 恢复失败：保持默认右缘吸附状态 */
+      },
+    );
+    return () => {
+      active = false;
+    };
   }, []);
 
   const cancelTimers = useCallback(() => {
@@ -268,22 +265,22 @@ export default function FloatingWidget({ runtime }: { runtime?: DesktopRuntime }
       applyAnchor(side);
       applyExpanded(false);
       void setWidgetGeometry(false, side, true, session.lastY);
-      persistLayout({ docked: side, y: session.lastY });
+      persistLayout(api, { docked: side, x: null, y: session.lastY });
       return;
     }
     const nextAnchor: Anchor = window.screenX + WIDGET_CARD_W / 2 > screenLeft() + window.screen.width / 2 ? "right" : "left";
     applyAnchor(nextAnchor);
     if (session.wasExpanded) {
       // 整卡拖动落点：持久化折叠球的等效位置（卡片贴靠侧的小球坐标）。
-      persistLayout({
+      persistLayout(api, {
         docked: null,
         x: session.lastX + (nextAnchor === "right" ? WIDGET_CARD_W - WIDGET_STRIP_W : 0),
         y: session.lastY,
       });
     } else {
-      persistLayout({ docked: null, x: session.lastX, y: session.lastY });
+      persistLayout(api, { docked: null, x: session.lastX, y: session.lastY });
     }
-  }, [expand]);
+  }, [api, expand]);
 
   const run = useCallback(async (action: () => Promise<unknown>) => {
     try {
