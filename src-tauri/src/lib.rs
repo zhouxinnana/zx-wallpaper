@@ -38,6 +38,7 @@ pub fn run() {
             system::start_background_tasks(app.handle().clone());
             system::start_directory_watcher(app.handle().clone());
             widget::position_floating_widget(&app.handle());
+            tagging::start_if_enabled(app.handle());
             setup_tray(&app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
@@ -85,6 +86,9 @@ pub fn run() {
             widget::get_widget_layout,
             widget::set_widget_layout,
             wallpaper::delete_current_wallpaper,
+            tagging::set_tagging_enabled,
+            tagging::get_tagging_status,
+            tagging::rescan_tags,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run ZX Wallpaper");

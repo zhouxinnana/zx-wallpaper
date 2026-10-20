@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import type { AppState, DesktopRuntime } from "./runtime/types";
+import type { AppState, DesktopRuntime, ImageTag, TaggingStatus } from "./runtime/types";
 
 afterEach(cleanup);
 
@@ -557,6 +557,125 @@ describe("ZX Wallpaper application shell", () => {
   });
 });
 
+describe("smart tagging", () => {
+  it("shows the tagging section as disabled and forwards enable requests", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const setTaggingEnabled = vi.fn(() => runtime.getState());
+    runtime.setTaggingEnabled = setTaggingEnabled;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "设置" }));
+
+    expect(screen.getByText("智能分类")).toBeTruthy();
+    const toggle = screen.getByRole("switch", { name: "启用智能分类" });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await user.click(toggle);
+
+    expect(setTaggingEnabled).toHaveBeenCalledWith(true);
+  });
+
+  it("shows model download progress while the tagging model is downloading", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0, undefined, undefined, {
+      status: { enabled: true, modelReady: false, downloading: { received: 44_000_000, total: 88_648_877 }, pending: 0 },
+    });
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "设置" }));
+
+    expect(await screen.findByText("下载中")).toBeTruthy();
+    expect(screen.getByText(/正在下载模型 42 \/ 85 MB（50%）/)).toBeTruthy();
+  });
+
+  it("shows a ready tagging model with the pending count", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0, undefined, undefined, {
+      status: { enabled: true, modelReady: true, downloading: null, pending: 3 },
+    });
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "设置" }));
+
+    expect(await screen.findByText("就绪")).toBeTruthy();
+    expect(screen.getByText(/待打标 3 张/)).toBeTruthy();
+  });
+
+  it("shows the model as not downloaded when tagging has never run", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0, undefined, undefined, {
+      status: { enabled: false, modelReady: false, downloading: null, pending: 0 },
+    });
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "设置" }));
+
+    expect(await screen.findByText("未下载")).toBeTruthy();
+  });
+
+  it("filters the online gallery by image category", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(2, undefined, undefined, {
+      taggingEnabled: true,
+      imageTags: [
+        { path: "D:\\ZX Wallpaper\\Online\\online-01.jpg", category: "nature", confidence: 0.9, taggedAt: "2026-10-20T00:00:00Z" },
+      ],
+    });
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+    expect(screen.getByText("online-01.jpg")).toBeTruthy();
+    expect(screen.getByText("online-02.jpg")).toBeTruthy();
+
+    const filter = screen.getByLabelText("按分类筛选图片");
+    await user.selectOptions(filter, "nature");
+    expect(screen.getByText("online-01.jpg")).toBeTruthy();
+    expect(screen.queryByText("online-02.jpg")).toBeNull();
+
+    await user.selectOptions(filter, "untagged");
+    expect(screen.queryByText("online-01.jpg")).toBeNull();
+    expect(screen.getByText("online-02.jpg")).toBeTruthy();
+
+    await user.selectOptions(filter, "all");
+    expect(screen.getByText("online-01.jpg")).toBeTruthy();
+    expect(screen.getByText("online-02.jpg")).toBeTruthy();
+  });
+
+  it("filters the favorites list by image category", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(2, undefined, undefined, {
+      taggingEnabled: true,
+      imageTags: [
+        { path: "D:\\ZX Wallpaper\\Online\\online-01.jpg", category: "game", confidence: 0.8, taggedAt: "2026-10-20T00:00:00Z" },
+      ],
+    });
+    const getState = runtime.getState;
+    runtime.getState = async () => ({
+      ...(await getState()),
+      favoritePaths: ["D:\\ZX Wallpaper\\Online\\online-01.jpg", "D:\\ZX Wallpaper\\Online\\online-02.jpg"],
+    });
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "我的喜欢" }));
+    expect(screen.getByText("online-01.jpg")).toBeTruthy();
+    expect(screen.getByText("online-02.jpg")).toBeTruthy();
+
+    await user.selectOptions(screen.getByLabelText("按分类筛选喜欢的壁纸"), "game");
+    expect(screen.getByText("online-01.jpg")).toBeTruthy();
+    expect(screen.queryByText("online-02.jpg")).toBeNull();
+  });
+
+  it("hides the category filters when tagging is disabled", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(1, undefined, undefined, { taggingEnabled: false });
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+
+    expect(screen.queryByLabelText("按分类筛选图片")).toBeNull();
+  });
+});
+
 class MockIntersectionObserver {
   readonly elements: Element[] = [];
   constructor(readonly callback: IntersectionObserverCallback) {}
@@ -573,6 +692,7 @@ function createOnlineGalleryRuntime(
   imageCount: number,
   getImageAsset = vi.fn(() => Promise.resolve({ src: "http://wallpaper-asset.localhost/thumbnail", width: 768, height: 432, status: "ready" as const })),
   prewarmImageAssets = vi.fn(() => Promise.resolve()),
+  tagging: { imageTags?: ImageTag[]; taggingEnabled?: boolean; status?: TaggingStatus } = {},
 ): DesktopRuntime {
   const state: AppState = {
     folders: [],
@@ -624,6 +744,8 @@ function createOnlineGalleryRuntime(
     onlineStorageLimitGb: 5,
     onlineMinimumResolution: 1920,
     widgetLayout: { docked: "right", x: null, y: null },
+    imageTags: tagging?.imageTags ?? [],
+    taggingEnabled: tagging?.taggingEnabled ?? false,
     availableCount: 0,
     previewUrl: null,
     previewItems: [
@@ -667,6 +789,9 @@ function createOnlineGalleryRuntime(
     revealWallpaper: () => Promise.resolve(),
     getWidgetLayout: () => Promise.resolve(state.widgetLayout),
     setWidgetLayout: unchanged,
+    setTaggingEnabled: (enabled: boolean) => Promise.resolve({ ...state, taggingEnabled: enabled }),
+    getTaggingStatus: () => Promise.resolve(tagging.status ?? { enabled: state.taggingEnabled, modelReady: false, downloading: null, pending: 0 }),
+    rescanTags: unchanged,
     onStateChanged: () => Promise.resolve(() => {}),
   };
 }

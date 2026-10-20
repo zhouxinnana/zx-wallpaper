@@ -124,6 +124,15 @@ pub struct WidgetLayout {
     pub y: Option<f64>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageTag {
+    pub path: String,
+    pub category: String,
+    pub confidence: f32,
+    pub tagged_at: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -173,6 +182,10 @@ pub struct AppConfig {
     pub online_minimum_resolution: u16,
     #[serde(default)]
     pub widget_layout: WidgetLayout,
+    #[serde(default)]
+    pub image_tags: Vec<ImageTag>,
+    #[serde(default)]
+    pub tagging_enabled: bool,
 }
 
 impl Default for AppConfig {
@@ -201,6 +214,8 @@ impl Default for AppConfig {
             online_storage_limit_gb: default_storage_limit(),
             online_minimum_resolution: default_minimum_resolution(),
             widget_layout: WidgetLayout::default(),
+            image_tags: Vec::new(),
+            tagging_enabled: false,
         }
     }
 }
@@ -279,6 +294,7 @@ pub struct RuntimeState {
     pub(crate) registered_skip_shortcut: Mutex<Option<String>>,
     pub(crate) upx8_next_request_at: Mutex<Instant>,
     pub(crate) state_file: PathBuf,
+    pub(crate) tagging: crate::tagging::TaggingQueue,
 }
 
 impl RuntimeState {
@@ -329,6 +345,7 @@ impl RuntimeState {
             registered_skip_shortcut: Mutex::new(None),
             upx8_next_request_at: Mutex::new(Instant::now()),
             state_file,
+            tagging: crate::tagging::TaggingQueue::new(),
         })
     }
 }

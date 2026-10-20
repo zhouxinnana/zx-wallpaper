@@ -40,6 +40,7 @@ import type {
   PreviewItem,
   RotationOrder,
   ShortcutStatus,
+  TaggingStatus,
   WallpaperFolder,
   WallpaperMode,
 } from "./runtime/types";
@@ -217,7 +218,7 @@ export default function App({ runtime }: { runtime?: DesktopRuntime }) {
     online: <OnlineView api={api} state={state} busy={busy} run={run} updateConfig={updateConfig} onOpenViewer={openViewer} openConfirm={openConfirm} />,
     favorites: <FavoritesView api={api} state={state} busy={busy} run={run} onOpenViewer={openViewer} />,
     lab: <LabView />,
-    settings: <SettingsView state={state} updateConfig={updateConfig} />,
+    settings: <SettingsView state={state} api={api} busy={busy} run={run} updateConfig={updateConfig} />,
   }[view];
   const viewerFileDelete = viewerPath && state.skippedPaths.some((path) => samePath(path, viewerPath)) ? {
     fileName: pathName(viewerPath),
@@ -519,13 +520,16 @@ function SkippedCard({ path, previewUrl, api, run, onOpenViewer }: { path: strin
 function FavoritesView({ api, state, busy, run, onOpenViewer }: { api: DesktopRuntime; state: AppState; busy: string | null; run: (key: string, action: () => Promise<unknown>) => Promise<void>; onOpenViewer: (filePath: string) => void }) {
   const onlineImages = new Map(state.onlineImages.map((image) => [image.localPath.toLowerCase(), image]));
   const [favoriteFilter, setFavoriteFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const tagByPath = new Map(state.imageTags.map((tag) => [tag.path.toLowerCase(), tag.category]));
   const keyword = favoriteFilter.trim().toLowerCase();
-  const favoritePaths = keyword
+  const favoritePaths = (keyword
     ? state.favoritePaths.filter((path) => pathName(path).toLowerCase().includes(keyword))
-    : state.favoritePaths;
+    : state.favoritePaths
+  ).filter((path) => matchesCategoryFilter(path, tagByPath, categoryFilter));
   return <div className="prototype-page favorites-page">
     <section className="content-section favorite-section">
-      <SectionHeading title={<>喜欢的壁纸 {state.favoritePaths.length > 0 && <b>({state.favoritePaths.length})</b>}</>} action={state.favoritePaths.length > 0 ? <input className="section-filter-input" type="search" aria-label="筛选喜欢的壁纸" placeholder="按文件名筛选" value={favoriteFilter} onChange={(event) => setFavoriteFilter(event.target.value)} /> : undefined} />
+      <SectionHeading title={<>喜欢的壁纸 {state.favoritePaths.length > 0 && <b>({state.favoritePaths.length})</b>}</>} action={state.favoritePaths.length > 0 ? <div className="section-actions">{state.taggingEnabled && <label className="inline-select">分类<select aria-label="按分类筛选喜欢的壁纸" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="all">全部分类</option>{upx8Categories.map((category) => <option key={category.key} value={category.key}>{category.label}</option>)}<option value="untagged">未打标</option></select></label>}<input className="section-filter-input" type="search" aria-label="筛选喜欢的壁纸" placeholder="按文件名筛选" value={favoriteFilter} onChange={(event) => setFavoriteFilter(event.target.value)} /></div> : undefined} />
       {state.favoritePaths.length === 0 ? <EmptyState text="暂无喜欢的壁纸" /> : favoritePaths.length === 0 ? <EmptyState text="没有匹配的壁纸" /> : <div className="favorite-grid">{favoritePaths.map((path) => <FavoriteCard key={path} path={path} onlineImage={onlineImages.get(path.toLowerCase())} api={api} busy={busy} run={run} onOpenViewer={onOpenViewer} />)}</div>}
     </section>
   </div>;
@@ -544,13 +548,16 @@ function FavoriteCard({ path, onlineImage, api, busy, run, onOpenViewer }: { pat
 function OnlineView({ api, state, busy, run, updateConfig, onOpenViewer, openConfirm }: { api: DesktopRuntime; state: AppState; busy: string | null; run: (key: string, action: () => Promise<unknown>) => Promise<void>; updateConfig: (patch: Partial<AppConfig>) => void; onOpenViewer: (filePath: string) => void; openConfirm: (options: ConfirmOptions) => void }) {
   const [sourceFilter, setSourceFilter] = useState("all");
   const [galleryFilter, setGalleryFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("all");
   const [visibleCount, setVisibleCount] = useState(ONLINE_PAGE_SIZE);
   const [selectedLogId, setSelectedLogId] = useState<string | null>(null);
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const prewarmedImagePaths = useRef(new Set<string>());
   const galleryKeyword = galleryFilter.trim().toLowerCase();
+  const tagByPath = new Map(state.imageTags.map((tag) => [tag.path.toLowerCase(), tag.category]));
   const images = (sourceFilter === "all" ? state.onlineImages : state.onlineImages.filter((image) => image.sourceId === sourceFilter))
-    .filter((image) => !galleryKeyword || image.localPath.toLowerCase().includes(galleryKeyword));
+    .filter((image) => !galleryKeyword || image.localPath.toLowerCase().includes(galleryKeyword))
+    .filter((image) => matchesCategoryFilter(image.localPath, tagByPath, categoryFilter));
   const visibleImages = images.slice(0, visibleCount);
   const selectedLog = state.onlineSyncLogs.find((log) => log.id === selectedLogId) ?? null;
   useEffect(() => {
@@ -600,7 +607,7 @@ function OnlineView({ api, state, busy, run, updateConfig, onOpenViewer, openCon
           </div>
         </section>
         <section className="content-section gallery-section">
-          <SectionHeading title="已下载图片" action={<div className="gallery-controls"><input className="section-filter-input" type="search" aria-label="筛选已下载图片" placeholder="按文件名筛选" value={galleryFilter} onChange={(event) => { setGalleryFilter(event.target.value); setVisibleCount(ONLINE_PAGE_SIZE); }} /><button className="action-button is-small" type="button" aria-label="刷新已下载图片" disabled={busy !== null} onClick={() => void run("refresh-online", () => api.rescanFolders())}><RefreshCw size={14} /> 刷新</button><label className="inline-select">来源<select aria-label="在线图片来源" value={sourceFilter} onChange={(event) => { setSourceFilter(event.target.value); setVisibleCount(ONLINE_PAGE_SIZE); }}><option value="all">全部来源</option>{state.onlineSources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label></div>} />
+          <SectionHeading title="已下载图片" action={<div className="gallery-controls"><input className="section-filter-input" type="search" aria-label="筛选已下载图片" placeholder="按文件名筛选" value={galleryFilter} onChange={(event) => { setGalleryFilter(event.target.value); setVisibleCount(ONLINE_PAGE_SIZE); }} />{state.taggingEnabled && <label className="inline-select">分类<select aria-label="按分类筛选图片" value={categoryFilter} onChange={(event) => { setCategoryFilter(event.target.value); setVisibleCount(ONLINE_PAGE_SIZE); }}><option value="all">全部分类</option>{upx8Categories.map((category) => <option key={category.key} value={category.key}>{category.label}</option>)}<option value="untagged">未打标</option></select></label>}<button className="action-button is-small" type="button" aria-label="刷新已下载图片" disabled={busy !== null} onClick={() => void run("refresh-online", () => api.rescanFolders())}><RefreshCw size={14} /> 刷新</button><label className="inline-select">来源<select aria-label="在线图片来源" value={sourceFilter} onChange={(event) => { setSourceFilter(event.target.value); setVisibleCount(ONLINE_PAGE_SIZE); }}><option value="all">全部来源</option>{state.onlineSources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label></div>} />
           {images.length === 0 ? <EmptyState text={state.onlineImages.length === 0 ? "尚未下载在线图片" : "没有匹配的图片"} /> : <div className="online-gallery">{visibleImages.map((image) => <OnlineImageCard key={image.id} image={image} isFavorite={state.favoritePaths.some((path) => samePath(path, image.localPath))} api={api} busy={busy} run={run} onOpenViewer={onOpenViewer} openConfirm={openConfirm} />)}{visibleCount < images.length && <div ref={loadMoreRef} className="online-gallery-load-more" role="status" aria-label="加载更多在线图片"><LoaderCircle className="spin" size={14} /></div>}</div>}
         </section>
       </div>
@@ -699,7 +706,7 @@ function OnlineImageCard({ image, isFavorite, api, busy, run, onOpenViewer, open
   </article>;
 }
 
-function SettingsView({ state, updateConfig }: { state: AppState; updateConfig: (patch: Partial<AppConfig>) => void }) {
+function SettingsView({ state, api, busy, run, updateConfig }: { state: AppState; api: DesktopRuntime; busy: string | null; run: (key: string, action: () => Promise<unknown>) => Promise<void>; updateConfig: (patch: Partial<AppConfig>) => void }) {
   const [nextShortcut, setNextShortcut] = useState(state.globalNextShortcut ?? "");
   const [skipShortcut, setSkipShortcut] = useState(state.globalSkipShortcut ?? "");
   useEffect(() => setNextShortcut(state.globalNextShortcut ?? ""), [state.globalNextShortcut]);
@@ -709,12 +716,59 @@ function SettingsView({ state, updateConfig }: { state: AppState; updateConfig: 
   return <div className="prototype-page settings-page">
     <SettingsPanel title="自动切换"><SettingsRow label="切换间隔" description="下一张壁纸的等待时长"><select aria-label="切换间隔" value={state.intervalMinutes} onChange={(event) => updateConfig({ intervalMinutes: Number(event.target.value) })}>{intervalOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></SettingsRow><SettingsRow label="切换顺序" description={state.rotationOrder === "random" ? "一轮内不重复" : "按绝对路径稳定循环"}><div className="segmented-control"><button type="button" className={state.rotationOrder === "random" ? "is-selected" : undefined} onClick={() => updateConfig({ rotationOrder: "random" })}>随机</button><button type="button" className={state.rotationOrder === "sequential" ? "is-selected" : undefined} onClick={() => updateConfig({ rotationOrder: "sequential" as RotationOrder })}>顺序</button></div></SettingsRow><SettingsRow label="显示方式" description="壁纸填充屏幕的方式"><select aria-label="设置显示方式" value={state.displayMode} onChange={(event) => updateConfig({ displayMode: event.target.value as WallpaperMode })}>{displayModes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select></SettingsRow></SettingsPanel>
     <SettingsPanel title="系统集成"><SettingsRow label="开机自动启动" description="仅在系统托盘运行，不显示主窗口"><Toggle label="开机自动启动" checked={state.autoStart} onChange={(autoStart) => updateConfig({ autoStart })} /></SettingsRow><SettingsRow label="跟随系统主题" description="深色 / 浅色主题切换时同步调整"><Toggle label="跟随系统主题" checked={state.followSystemTheme} onChange={(followSystemTheme) => updateConfig({ followSystemTheme })} /></SettingsRow><SettingsRow label="关闭窗口时隐藏到托盘" description="关闭后继续在后台运行"><Toggle label="关闭窗口时隐藏到托盘" checked={state.hideToTrayOnClose} onChange={(hideToTrayOnClose) => updateConfig({ hideToTrayOnClose })} /></SettingsRow></SettingsPanel>
+    <TaggingSettings state={state} api={api} busy={busy} run={run} />
     <SettingsPanel title="全局快捷键"><SettingsRow label="下一张壁纸" description="保存时立即尝试注册"><div className="shortcut-editor"><input aria-label="全局下一张快捷键" placeholder="例如 Ctrl+Alt+N" value={nextShortcut} onChange={(event) => setNextShortcut(event.target.value)} onBlur={saveNextShortcut} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><ShortcutStatusTag status={state.shortcutStatus} /></div></SettingsRow><SettingsRow label="跳过此图" description="保存时立即尝试注册"><div className="shortcut-editor"><input aria-label="全局跳过快捷键" placeholder="例如 Ctrl+Alt+S" value={skipShortcut} onChange={(event) => setSkipShortcut(event.target.value)} onBlur={saveSkipShortcut} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><ShortcutStatusTag status={state.skipShortcutStatus} /></div></SettingsRow></SettingsPanel>
     <SettingsPanel title="更新"><SettingsRow label="当前版本" description="手动检查并由用户确认下载"><span className="settings-version">v0.1.5</span></SettingsRow><SettingsRow label="检查更新" description="当前发布未配置签名更新清单"><button className="action-button is-small" type="button" disabled title="需要签名私钥和更新地址">检查更新</button></SettingsRow></SettingsPanel>
   </div>;
 }
 
 function ShortcutStatusTag({ status }: { status: ShortcutStatus }) { if (status.state === "active") return <Tag tone="green">已注册</Tag>; if (status.state === "error") return <span className="shortcut-status"><Tag tone="red">注册失败</Tag><small role="alert">{status.message}</small></span>; return <Tag tone="amber">未启用</Tag>; }
+
+function TaggingSettings({ state, api, busy, run }: { state: AppState; api: DesktopRuntime; busy: string | null; run: (key: string, action: () => Promise<unknown>) => Promise<void> }) {
+  const [status, setStatus] = useState<TaggingStatus | null>(null);
+  useEffect(() => {
+    let active = true;
+    const poll = () => {
+      void api.getTaggingStatus().then((next) => { if (active) setStatus(next); }).catch(() => {});
+    };
+    poll();
+    const timer = window.setInterval(poll, 1500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [api]);
+  const copy = taggingStatusCopy(status);
+  return <SettingsPanel title="智能分类">
+    <SettingsRow label="启用智能分类" description="本地推理为图片自动标注十分类，全程无遥测；首次启用需下载约 85MB 模型。">
+      <Toggle label="启用智能分类" checked={state.taggingEnabled} disabled={busy !== null} onChange={(enabled) => void run("tagging-toggle", () => api.setTaggingEnabled(enabled))} />
+    </SettingsRow>
+    <SettingsRow label="模型状态" description={copy.description}>
+      <Tag tone={copy.tone}>{copy.label}</Tag>
+    </SettingsRow>
+  </SettingsPanel>;
+}
+
+function taggingStatusCopy(status: TaggingStatus | null): { description: string; label: string; tone: "blue" | "green" | "amber" | "red" } {
+  if (!status) return { description: "正在读取模型状态…", label: "检查中", tone: "blue" };
+  if (status.downloading) {
+    const { received, total } = status.downloading;
+    const receivedMb = Math.round(received / 1024 ** 2);
+    return {
+      description: total
+        ? `正在下载模型 ${receivedMb} / ${Math.round(total / 1024 ** 2)} MB（${Math.round((received / total) * 100)}%）`
+        : `正在下载模型 ${receivedMb} MB`,
+      label: "下载中",
+      tone: "amber",
+    };
+  }
+  if (!status.modelReady) return { description: "模型尚未下载，启用后会自动从镜像源下载。", label: "未下载", tone: "amber" };
+  return { description: `本地推理就绪，待打标 ${status.pending} 张。`, label: "就绪", tone: "green" };
+}
+
+/** 分类筛选谓词：all=全部；untagged=无标签；其余值按类别 key 精确匹配。 */
+function matchesCategoryFilter(path: string, tagByPath: Map<string, string>, filter: string) {
+  if (filter === "all") return true;
+  const category = tagByPath.get(path.toLowerCase());
+  return filter === "untagged" ? !category : category === filter;
+}
 
 function LabView() {
   return <div className="prototype-page lab-page">
@@ -807,6 +861,7 @@ function createBrowserPreviewApi(): DesktopRuntime {
     onlineSources: [{ id: "upx8-4k", name: "UPX8 综合壁纸 4K", url: "https://wp.upx8.com/api.php", enabled: true, intervalHours: 24, lastRunAt: null, nextRunAt: null, lastDiscovered: 0, lastDownloaded: 0, lastError: null, categoryStatuses: [] }],
     onlineImages: [], onlineSyncLogs: [], onlineDirectory: "D:\\Pictures\\ZX Wallpaper\\Online", onlineStorageLimitGb: 5, onlineMinimumResolution: 1920,
     widgetLayout: { docked: "right", x: null, y: null },
+    imageTags: [], taggingEnabled: false,
     availableCount: 128, previewUrl: previewImage, previewItems,
     folderStatuses: { "demo-scenic": { kind: "available", availableCount: 110, invalidCount: 0, scannedAt: new Date().toISOString() } },
     onlineStorageBytes: 1.2 * 1024 ** 3, globalShortcutRegistered: false, shortcutStatus: { state: "disabled" }, skipShortcutStatus: { state: "disabled" },
@@ -834,7 +889,11 @@ function createBrowserPreviewApi(): DesktopRuntime {
     restoreSkippedPath: (path) => update({ skippedPaths: state.skippedPaths.filter((item) => item !== path) }), restoreAllSkipped: () => update({ skippedPaths: [] }), deleteSkippedPath: (path) => update({ skippedPaths: state.skippedPaths.filter((item) => item !== path) }), deleteAllSkipped: () => update({ skippedPaths: [] }), togglePaused: () => update({ paused: !state.paused }),
     updateOnlineSource: (source) => update({ onlineSources: state.onlineSources.map((item) => item.id === source.id ? source : item) }), runOnlineSource: () => Promise.resolve(state), runUpx8Category: () => Promise.resolve(state),
     setOnlineImageAsWallpaper: (id) => { const image = state.onlineImages.find((item) => item.id === id); return image ? update({ currentPath: image.localPath, paused: true }) : Promise.resolve(state); }, deleteOnlineImage: (id) => update({ onlineImages: state.onlineImages.filter((image) => image.id !== id), favoritePaths: state.favoritePaths.filter((path) => !samePath(path, state.onlineImages.find((image) => image.id === id)?.localPath ?? "")) }), selectOnlineDirectory: () => update({ onlineDirectory: "D:\\Pictures\\ZX Wallpaper Library" }), revealOnlineImage: () => Promise.resolve(state), revealWallpaper: () => Promise.resolve(),
-    getWidgetLayout: () => Promise.resolve(state.widgetLayout), setWidgetLayout: (layout) => update({ widgetLayout: layout }), onStateChanged: (listener) => { listeners.add(listener); return Promise.resolve(() => listeners.delete(listener)); },
+    getWidgetLayout: () => Promise.resolve(state.widgetLayout), setWidgetLayout: (layout) => update({ widgetLayout: layout }),
+    setTaggingEnabled: (enabled) => update({ taggingEnabled: enabled }),
+    getTaggingStatus: () => Promise.resolve({ enabled: state.taggingEnabled, modelReady: false, downloading: null, pending: 0 }),
+    rescanTags: () => Promise.resolve(state),
+    onStateChanged: (listener) => { listeners.add(listener); return Promise.resolve(() => listeners.delete(listener)); },
   };
 }
 
@@ -856,6 +915,7 @@ function operationMessage(key: string, phase: "pending" | "success") {
   if (key === "delete-skipped-file") return pending ? "正在删除图片文件..." : "图片文件已移入回收站。";
   if (key.startsWith("run-")) return pending ? "正在抓取在线来源，下载原图可能需要一些时间..." : "在线来源抓取已完成，请查看发现和下载数量。";
   if (key === "refresh-online") return pending ? "正在刷新已下载图片..." : "已刷新图片列表。";
+  if (key.startsWith("tagging-")) return pending ? "正在更新智能分类设置..." : "智能分类设置已更新。";
   return pending ? "正在处理..." : "操作已完成。";
 }
 function operationError(cause: unknown) {

@@ -26,6 +26,8 @@ const state: AppState = {
   onlineStorageLimitGb: 5,
   onlineMinimumResolution: 1920,
   widgetLayout: { docked: "right", x: null, y: null },
+  imageTags: [],
+  taggingEnabled: false,
   availableCount: 0,
   previewUrl: null,
   previewItems: [],
@@ -94,6 +96,20 @@ describe("Tauri runtime", () => {
 
     await expect(runtime.deleteAllSkipped()).resolves.toEqual(state);
     expect(invoke).toHaveBeenCalledWith("delete_all_skipped");
+  });
+
+  it("forwards smart-tagging commands", async () => {
+    const invoke = vi.fn().mockResolvedValue(state);
+    const runtime = createTauriRuntime({ invoke, listen: vi.fn() });
+
+    await runtime.setTaggingEnabled(true);
+    expect(invoke).toHaveBeenCalledWith("set_tagging_enabled", { enabled: true });
+
+    await runtime.getTaggingStatus();
+    expect(invoke).toHaveBeenCalledWith("get_tagging_status");
+
+    await runtime.rescanTags();
+    expect(invoke).toHaveBeenCalledWith("rescan_tags");
   });
 
   it("forwards state events and unregisters the listener", async () => {

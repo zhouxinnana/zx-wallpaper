@@ -89,6 +89,8 @@ pub(crate) fn start_directory_watcher(app: AppHandle) {
                     rescan_config(config);
                     Ok(())
                 });
+                // 智能分类增量打标：重扫后把新增未打标图片入队（未启用时为空操作）。
+                crate::tagging::enqueue_pending(&state);
                 pending_rescan = None;
             }
         }

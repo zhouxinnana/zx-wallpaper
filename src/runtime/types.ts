@@ -110,6 +110,25 @@ export interface WidgetLayout {
   y: number | null;
 }
 
+export interface ImageTag {
+  path: string;
+  category: string;
+  confidence: number;
+  taggedAt: string;
+}
+
+export interface TaggingDownloadProgress {
+  received: number;
+  total: number | null;
+}
+
+export interface TaggingStatus {
+  enabled: boolean;
+  modelReady: boolean;
+  downloading: TaggingDownloadProgress | null;
+  pending: number;
+}
+
 export interface AppConfig {
   folders: WallpaperFolder[];
   intervalMinutes: number;
@@ -134,6 +153,8 @@ export interface AppConfig {
   onlineStorageLimitGb: 1 | 5 | 10 | 20;
   onlineMinimumResolution: 1920 | 2560 | 3840;
   widgetLayout: WidgetLayout;
+  imageTags: ImageTag[];
+  taggingEnabled: boolean;
 }
 
 export interface AppState extends AppConfig {
@@ -176,5 +197,8 @@ export interface DesktopRuntime {
   revealWallpaper(filePath: string): Promise<void>;
   getWidgetLayout(): Promise<WidgetLayout>;
   setWidgetLayout(layout: WidgetLayout): Promise<AppState>;
+  setTaggingEnabled(enabled: boolean): Promise<AppState>;
+  getTaggingStatus(): Promise<TaggingStatus>;
+  rescanTags(): Promise<AppState>;
   onStateChanged(listener: (state: AppState) => void): Promise<() => void>;
 }

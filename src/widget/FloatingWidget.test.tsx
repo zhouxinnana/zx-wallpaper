@@ -136,6 +136,8 @@ function createWidgetState(overrides: Partial<AppState> = {}): AppState {
     onlineStorageLimitGb: 5,
     onlineMinimumResolution: 1920,
     widgetLayout: { docked: "right", x: null, y: null },
+    imageTags: [],
+    taggingEnabled: false,
     availableCount: 0,
     previewUrl: null,
     previewItems: [],
@@ -179,6 +181,9 @@ function createWidgetRuntime(state: AppState): DesktopRuntime {
     revealWallpaper: () => Promise.resolve(),
     getWidgetLayout: () => Promise.resolve({ docked: "right", x: null, y: null }),
     setWidgetLayout: unchanged,
+    setTaggingEnabled: unchanged,
+    getTaggingStatus: () => Promise.resolve({ enabled: false, modelReady: false, downloading: null, pending: 0 }),
+    rescanTags: unchanged,
     onStateChanged: () => Promise.resolve(() => {}),
   };
 }

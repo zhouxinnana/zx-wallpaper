@@ -5,6 +5,7 @@ import type {
   AppState,
   DesktopRuntime,
   OnlineSource,
+  TaggingStatus,
   WallpaperFolder,
   WidgetLayout,
 } from "./types";
@@ -58,6 +59,9 @@ export function createTauriRuntime(bindings: TauriBindings): DesktopRuntime {
     revealWallpaper: (filePath) => command("reveal_wallpaper", { filePath }),
     getWidgetLayout: () => command("get_widget_layout"),
     setWidgetLayout: (layout: WidgetLayout) => command("set_widget_layout", { layout }),
+    setTaggingEnabled: (enabled: boolean) => command("set_tagging_enabled", { enabled }),
+    getTaggingStatus: () => command("get_tagging_status"),
+    rescanTags: () => command("rescan_tags"),
     onStateChanged: (listener) =>
       bindings.listen<AppState>("app://state-changed", ({ payload }) =>
         listener(payload),
@@ -70,4 +74,4 @@ export const tauriRuntime = createTauriRuntime({
   listen: tauriListen,
 });
 
-export type { AppConfig, AppState, DesktopRuntime, OnlineSource, WallpaperFolder, WidgetLayout };
+export type { AppConfig, AppState, DesktopRuntime, OnlineSource, TaggingStatus, WallpaperFolder, WidgetLayout };
