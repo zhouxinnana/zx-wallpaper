@@ -1,7 +1,9 @@
 use std::{
+    collections::{HashMap, HashSet},
+    fs,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    time::Duration as StdDuration,
+    time::{Duration as StdDuration, Instant},
 };
 
 use image::GenericImageView;
@@ -10,9 +12,20 @@ use reqwest::{
     redirect::Policy,
     Client, Response, Url,
 };
+use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use tokio::net::lookup_host;
 use uuid::Uuid;
+
+use crate::domain::same_path;
+use crate::library::rescan_config;
+use crate::state::{
+    get_state, lock_config, mutate, mutate_without_rescan, AppState, AppConfig,
+    LibraryScan, OnlineDownloadFailure, OnlineImage, OnlineSource, OnlineSourceCategoryStatus,
+    OnlineSyncLog, RuntimeState,
+};
+use crate::wallpaper::{record_wallpaper_history, set_desktop_wallpaper};
 
 const MAX_REDIRECTS: usize = 5;
 const MAX_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
@@ -450,11 +463,800 @@ fn is_public_ip(address: IpAddr) -> bool {
     }
 }
 
+const ONLINE_SYNC_LOG_CAPACITY: usize = 40;
+
+pub(crate) fn built_in_sources() -> Vec<OnlineSource> {
+    vec![OnlineSource {
+        id: "upx8-4k".to_string(),
+        name: "UPX8 综合壁纸 4K".to_string(),
+        url: "https://wp.upx8.com/api.php".to_string(),
+        enabled: false,
+        interval_hours: 24,
+        last_run_at: None,
+        next_run_at: None,
+        last_discovered: 0,
+        last_downloaded: 0,
+        last_error: None,
+        category_statuses: default_upx8_category_statuses(),
+    }]
+}
+
+fn default_upx8_category_statuses() -> Vec<OnlineSourceCategoryStatus> {
+    UPX8_CATEGORIES
+        .iter()
+        .map(|(key, label)| OnlineSourceCategoryStatus {
+            key: (*key).to_string(),
+            label: (*label).to_string(),
+            discovered: 0,
+            downloaded: 0,
+            last_error: None,
+        })
+        .collect()
+}
+
+fn normalize_upx8_category_statuses(
+    statuses: &[OnlineSourceCategoryStatus],
+) -> Vec<OnlineSourceCategoryStatus> {
+    default_upx8_category_statuses()
+        .into_iter()
+        .map(|mut status| {
+            if let Some(saved) = statuses.iter().find(|saved| saved.key == status.key) {
+                status.discovered = saved.discovered;
+                status.downloaded = saved.downloaded;
+                status.last_error = saved.last_error.clone();
+            }
+            status
+        })
+        .collect()
+}
+
+pub(crate) fn merge_online_sources(saved: Vec<OnlineSource>) -> Vec<OnlineSource> {
+    let mut saved_by_id: HashMap<_, _> = saved
+        .iter()
+        .map(|source| (source.id.as_str(), source))
+        .collect();
+    let merged: Vec<_> = built_in_sources()
+        .into_iter()
+        .map(|mut builtin| {
+            if let Some(saved) = saved_by_id.remove(builtin.id.as_str()) {
+                builtin.enabled = saved.enabled;
+                builtin.interval_hours = match saved.interval_hours {
+                    1 | 6 | 12 | 24 => saved.interval_hours,
+                    _ => 24,
+                };
+                builtin.last_run_at = saved.last_run_at.clone();
+                builtin.next_run_at = saved.next_run_at.clone();
+                builtin.last_discovered = saved.last_discovered;
+                builtin.last_downloaded = saved.last_downloaded;
+                builtin.last_error = saved.last_error.clone();
+                builtin.category_statuses = normalize_upx8_category_statuses(&saved.category_statuses);
+            }
+            builtin
+        })
+        .collect();
+    merged
+}
+
+#[tauri::command]
+pub fn update_online_source(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    source: OnlineSource,
+) -> Result<AppState, String> {
+    mutate_without_rescan(&app, &state, move |config| {
+        if source.id != "upx8-4k" {
+            return Err("仅支持 UPX8 综合壁纸 4K 来源。".to_string());
+        }
+        let saved = config
+            .online_sources
+            .iter_mut()
+            .find(|saved| saved.id == source.id)
+            .ok_or_else(|| "该在线来源已不存在。".to_string())?;
+        saved.enabled = source.enabled;
+        saved.interval_hours = match source.interval_hours {
+            1 | 6 | 12 | 24 => source.interval_hours,
+            _ => 24,
+        };
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub async fn run_online_source(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    source_id: String,
+) -> Result<AppState, String> {
+    run_online_source_impl(&app, &state, source_id, None, true).await
+}
+
+#[tauri::command]
+pub async fn run_upx8_category(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    category_key: String,
+) -> Result<AppState, String> {
+    if upx8_category_label(&category_key).is_none() {
+        return Err("UPX8 分类不存在。".to_string());
+    }
+    run_online_source_impl(&app, &state, "upx8-4k".to_string(), Some(category_key), true).await
+}
+
+pub(crate) async fn run_online_source_impl(
+    app: &AppHandle,
+    state: &RuntimeState,
+    source_id: String,
+    category_key: Option<String>,
+    manual: bool,
+) -> Result<AppState, String> {
+    if source_id != "upx8-4k" {
+        return Err("仅支持 UPX8 综合壁纸 4K 来源。".to_string());
+    }
+    let (source, directory, minimum_resolution, storage_limit, known_urls, storage_bytes) = {
+        let config = lock_config(state)?;
+        let source = config
+            .online_sources
+            .iter()
+            .find(|source| source.id == source_id)
+            .cloned()
+            .ok_or_else(|| "该在线来源已不存在。".to_string())?;
+        let directory = config
+            .online_directory
+            .clone()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_online_directory(state));
+        let known_urls: HashSet<String> = config
+            .online_images
+            .iter()
+            .map(|image| image.image_url.clone())
+            .collect();
+        (
+            source,
+            directory,
+            config.online_minimum_resolution,
+            u64::from(config.online_storage_limit_gb) * 1024 * 1024 * 1024,
+            known_urls,
+            online_storage_bytes(&config),
+        )
+    };
+    if !source.enabled && !manual {
+        return Err("该在线来源当前已禁用。".to_string());
+    }
+
+    let category_keys = category_key
+        .as_deref()
+        .map(|key| vec![key.to_string()])
+        .unwrap_or_else(|| {
+            UPX8_CATEGORIES
+                .iter()
+                .map(|(key, _)| (*key).to_string())
+                .collect()
+        });
+    let log_ids = start_online_sync_logs(
+        app,
+        state,
+        &source_id,
+        &source.url,
+        minimum_resolution,
+        &category_keys,
+    )?;
+    let started = Instant::now();
+    let fetched = match fetch_upx8_categories(
+        state,
+        &source.url,
+        minimum_resolution,
+        category_keys,
+    )
+    .await
+    {
+        Ok(fetched) => fetched,
+        Err(error) => {
+            let completed_at = now_rfc3339();
+            let elapsed = started.elapsed().as_millis() as u64;
+            let error_for_log = error.clone();
+            mutate_without_rescan(app, state, move |config| {
+                complete_online_sync_logs(
+                    config,
+                    &log_ids,
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    Some(&error_for_log),
+                    &completed_at,
+                    elapsed,
+                );
+                Ok(())
+            })?;
+            return Err(error);
+        }
+    };
+
+    let candidates = fetched.candidates;
+    let category_results = fetched.categories;
+    let mut seen = known_urls;
+    let mut downloaded = Vec::new();
+    let mut downloaded_by_category = HashMap::new();
+    let mut skipped_by_category = HashMap::new();
+    let mut download_errors: HashMap<String, Vec<DownloadFailure>> = HashMap::new();
+    let mut downloaded_bytes = 0;
+    for candidate in candidates.iter().cloned() {
+        let category_key = candidate.category_key.clone().unwrap_or_default();
+        if seen.contains(&candidate.image_url) || storage_bytes + downloaded_bytes >= storage_limit
+        {
+            *skipped_by_category.entry(category_key).or_insert(0) += 1;
+            continue;
+        }
+        match download_candidate(candidate, &directory).await {
+            Ok(image) => {
+                downloaded_bytes += image.byte_length;
+                seen.insert(image.image_url.clone());
+                downloaded.push(image);
+                *downloaded_by_category.entry(category_key).or_insert(0) += 1;
+            }
+            Err(error) => download_errors.entry(category_key).or_default().push(error),
+        }
+    }
+
+    let discovered = candidates.len();
+    let completed_at = now_rfc3339();
+    let elapsed = started.elapsed().as_millis() as u64;
+    mutate_without_rescan(app, state, move |config| {
+        let downloaded_count = downloaded.len();
+        config
+            .online_images
+            .extend(downloaded.into_iter().map(|image| OnlineImage {
+                id: Uuid::new_v4().to_string(),
+                source_id: source_id.clone(),
+                local_path: image.local_path.to_string_lossy().into_owned(),
+                source_page_url: image.source_page_url,
+                image_url: image.image_url,
+                downloaded_at: image.downloaded_at,
+                width: image.width,
+                height: image.height,
+                mime_type: image.mime_type,
+            }));
+        sort_online_images_by_downloaded_at(&mut config.online_images);
+        if source_id == "upx8-4k" {
+            let mut statuses = config
+                .online_sources
+                .iter()
+                .find(|source| source.id == source_id)
+                .map(|source| normalize_upx8_category_statuses(&source.category_statuses))
+                .unwrap_or_else(default_upx8_category_statuses);
+            for category in &category_results {
+                if let Some(status) = statuses.iter_mut().find(|status| status.key == category.key) {
+                    status.discovered = category.discovered;
+                    status.downloaded = downloaded_by_category
+                        .get(&category.key)
+                        .copied()
+                        .unwrap_or_default();
+                    status.last_error = category.error.clone();
+                }
+            }
+            if let Some(source) = config
+                .online_sources
+                .iter_mut()
+                .find(|source| source.id == source_id)
+            {
+                source.category_statuses = statuses;
+            }
+        }
+        complete_online_sync_logs(
+            config,
+            &log_ids,
+            &category_results,
+            &downloaded_by_category,
+            &skipped_by_category,
+            &download_errors,
+            None,
+            &completed_at,
+            elapsed,
+        );
+        update_source_result(config, &source_id, discovered, downloaded_count, None);
+        Ok(())
+    })
+}
+
+fn start_online_sync_logs(
+    app: &AppHandle,
+    state: &RuntimeState,
+    source_id: &str,
+    source_url: &str,
+    minimum_resolution: u16,
+    category_keys: &[String],
+) -> Result<HashMap<String, String>, String> {
+    let started_at = now_rfc3339();
+    let resolution = upx8_resolution(minimum_resolution).to_string();
+    let log_ids: HashMap<String, String> = category_keys
+        .iter()
+        .cloned()
+        .map(|key| (key, Uuid::new_v4().to_string()))
+        .collect();
+    let entries: Vec<OnlineSyncLog> = category_keys
+        .iter()
+        .map(|key| OnlineSyncLog {
+            id: log_ids[key].clone(),
+            source_id: source_id.to_string(),
+            category_key: key.clone(),
+            category_label: upx8_category_label(key)
+                .unwrap_or(key.as_str())
+                .to_string(),
+            request_url: upx8_request_url(source_url, key, minimum_resolution)
+                .map(|url| url.to_string())
+                .unwrap_or_else(|_| source_url.to_string()),
+            format: "json".to_string(),
+            resolution: resolution.clone(),
+            count: 10,
+            started_at: started_at.clone(),
+            finished_at: None,
+            duration_ms: None,
+            status: "running".to_string(),
+            response_status: None,
+            discovered: 0,
+            downloaded: 0,
+            skipped: 0,
+            response_image_urls: Vec::new(),
+            errors: Vec::new(),
+            download_failures: Vec::new(),
+        })
+        .collect();
+    mutate_without_rescan(app, state, move |config| {
+        config.online_sync_logs.splice(0..0, entries);
+        config.online_sync_logs.truncate(ONLINE_SYNC_LOG_CAPACITY);
+        Ok(())
+    })?;
+    Ok(log_ids)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn complete_online_sync_logs(
+    config: &mut AppConfig,
+    log_ids: &HashMap<String, String>,
+    category_results: &[CategoryResult],
+    downloaded_by_category: &HashMap<String, usize>,
+    skipped_by_category: &HashMap<String, usize>,
+    download_errors: &HashMap<String, Vec<DownloadFailure>>,
+    terminal_error: Option<&str>,
+    completed_at: &str,
+    duration_ms: u64,
+) {
+    for (category_key, id) in log_ids {
+        let category = category_results
+            .iter()
+            .find(|category| category.key == *category_key);
+        let mut errors = category
+            .and_then(|category| category.error.clone())
+            .into_iter()
+            .collect::<Vec<_>>();
+        if let Some(download_errors) = download_errors.get(category_key) {
+            errors.extend(
+                download_errors
+                    .iter()
+                    .map(|failure| failure.reason.clone()),
+            );
+        }
+        if let Some(error) = terminal_error {
+            errors.push(error.to_string());
+        }
+        let status = if terminal_error.is_some() || category.and_then(|category| category.error.as_ref()).is_some() {
+            "failed"
+        } else if errors.is_empty() {
+            "success"
+        } else {
+            "partial"
+        };
+        if let Some(log) = config.online_sync_logs.iter_mut().find(|log| log.id == *id) {
+            log.finished_at = Some(completed_at.to_string());
+            log.duration_ms = Some(duration_ms);
+            log.status = status.to_string();
+            log.response_status = category.and_then(|category| category.response_status);
+            if let Some(category) = category {
+                log.request_url = category.request_url.clone();
+            }
+            log.discovered = category.map(|category| category.discovered).unwrap_or_default();
+            log.downloaded = downloaded_by_category
+                .get(category_key)
+                .copied()
+                .unwrap_or_default();
+            log.skipped = skipped_by_category.get(category_key).copied().unwrap_or_default();
+            log.response_image_urls = category
+                .map(|category| category.response_image_urls.clone())
+                .unwrap_or_default();
+            log.errors = errors;
+            log.download_failures = download_errors
+                .get(category_key)
+                .map(|failures| {
+                    failures
+                        .iter()
+                        .map(|failure| OnlineDownloadFailure {
+                            image_url: failure.image_url.clone(),
+                            resolved_url: failure.resolved_url.clone(),
+                            response_status: failure.response_status,
+                            content_type: failure.content_type.clone(),
+                            reason: failure.reason.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+    }
+}
+
+fn upx8_resolution(minimum_resolution: u16) -> &'static str {
+    match minimum_resolution {
+        3840 => "3840x2160",
+        2560 => "2560x1440",
+        _ => "1920x1080",
+    }
+}
+
+async fn fetch_upx8_categories(
+    state: &RuntimeState,
+    source_url: &str,
+    minimum_resolution: u16,
+    category_keys: Vec<String>,
+) -> Result<SourceFetchResult, String> {
+    let mut fetched = SourceFetchResult::default();
+    for key in category_keys {
+        upx8_category_label(&key).ok_or_else(|| "UPX8 分类不存在。".to_string())?;
+        wait_for_upx8_request_slot(state).await?;
+        match fetch_upx8_category(source_url, &key, minimum_resolution).await {
+            Ok(response) => {
+                fetched.categories.push(CategoryResult {
+                    key,
+                    request_url: response.request_url,
+                    response_status: Some(response.response_status),
+                    response_image_urls: response.image_urls,
+                    discovered: response.candidates.len(),
+                    error: None,
+                });
+                fetched.candidates.extend(response.candidates);
+            }
+            Err(error) => fetched.categories.push(CategoryResult {
+                request_url: upx8_request_url(source_url, &key, minimum_resolution)
+                    .map(|url| url.to_string())
+                    .unwrap_or_else(|_| source_url.to_string()),
+                key,
+                response_status: None,
+                response_image_urls: Vec::new(),
+                discovered: 0,
+                error: Some(error),
+            }),
+        }
+    }
+    Ok(fetched)
+}
+
+async fn wait_for_upx8_request_slot(state: &RuntimeState) -> Result<(), String> {
+    let wait = {
+        let mut next_request_at = state
+            .upx8_next_request_at
+            .lock()
+            .map_err(|_| "无法获取 UPX8 请求限速器。".to_string())?;
+        let now = Instant::now();
+        let scheduled_at = (*next_request_at).max(now);
+        *next_request_at = scheduled_at + StdDuration::from_secs(1);
+        scheduled_at.saturating_duration_since(now)
+    };
+    if !wait.is_zero() {
+        tokio::time::sleep(wait).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_online_image_as_wallpaper(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    image_id: String,
+) -> Result<AppState, String> {
+    let (path, display_mode) = {
+        let config = lock_config(&state)?;
+        let path = config
+            .online_images
+            .iter()
+            .find(|image| image.id == image_id)
+            .map(|image| image.local_path.clone())
+            .ok_or_else(|| "该在线图片已不存在。".to_string())?;
+        (path, config.display_mode.clone())
+    };
+    let wallpaper_path = PathBuf::from(&path);
+    tauri::async_runtime::spawn_blocking(move || {
+        set_desktop_wallpaper(&wallpaper_path, &display_mode)
+    })
+    .await
+    .map_err(|error| format!("设置壁纸任务中断: {error}"))??;
+
+    mutate_without_rescan(&app, &state, move |config| {
+        select_online_wallpaper(config, &image_id)?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub async fn delete_online_image(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    image_id: String,
+) -> Result<AppState, String> {
+    let path = {
+        let config = lock_config(&state)?;
+        config
+            .online_images
+            .iter()
+            .find(|image| image.id == image_id)
+            .map(|image| image.local_path.clone())
+            .ok_or_else(|| "该在线图片已不存在。".to_string())?
+    };
+    let path_to_delete = path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if Path::new(&path_to_delete).exists() {
+            trash::delete(&path_to_delete)
+                .map_err(|error| std::io::Error::other(error.to_string()))
+        } else {
+            Ok(())
+        }
+    })
+    .await
+    .map_err(|error| format!("删除在线图片任务中断: {error}"))?
+    .map_err(|error| format!("无法删除在线图片: {error}"))?;
+    state.image_assets.purge_source(&path);
+    mutate_without_rescan(&app, &state, move |config| {
+        config.online_images.retain(|image| image.id != image_id);
+        config
+            .favorite_paths
+            .retain(|favorite| !same_path(favorite, &path));
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub async fn select_online_directory(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+) -> Result<AppState, String> {
+    let Some(directory) = app.dialog().file().blocking_pick_folder() else {
+        return get_state(app, state);
+    };
+    let directory = directory
+        .into_path()
+        .map_err(|error| format!("所选在线壁纸目录无效: {error}"))?;
+    mutate(&app, &state, move |config| {
+        migrate_online_directory(config, &directory)
+    })
+}
+
+#[tauri::command]
+pub fn reveal_online_image(state: State<'_, RuntimeState>, image_id: String) -> Result<(), String> {
+    let path = {
+        let config = lock_config(&state)?;
+        config
+            .online_images
+            .iter()
+            .find(|image| image.id == image_id)
+            .map(|image| image.local_path.clone())
+            .ok_or_else(|| "该在线图片已不存在。".to_string())?
+    };
+    std::process::Command::new("explorer.exe")
+        .arg("/select,")
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("无法打开图片所在目录: {error}"))?;
+    Ok(())
+}
+
+fn default_online_directory(state: &RuntimeState) -> PathBuf {
+    state
+        .state_file
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("online-wallpapers")
+}
+
+fn migrate_online_directory(config: &mut AppConfig, directory: &Path) -> Result<(), String> {
+    fs::create_dir_all(directory).map_err(|error| format!("无法创建在线壁纸目录: {error}"))?;
+    let mut moved_paths = Vec::new();
+
+    for image in &config.online_images {
+        let source = Path::new(&image.local_path);
+        if !source.is_file() || source.parent() == Some(directory) {
+            continue;
+        }
+        let file_name = source
+            .file_name()
+            .ok_or_else(|| "在线图片缺少文件名。".to_string())?;
+        let target = available_online_target_path(directory, file_name);
+        match fs::rename(source, &target) {
+            Ok(()) => {}
+            Err(_) => {
+                fs::copy(source, &target).map_err(|error| format!("无法迁移在线图片: {error}"))?;
+                fs::remove_file(source)
+                    .map_err(|error| format!("无法移除已迁移的在线图片: {error}"))?;
+            }
+        }
+        moved_paths.push((
+            image.local_path.clone(),
+            target.to_string_lossy().into_owned(),
+        ));
+    }
+
+    for (source, target) in &moved_paths {
+        for image in &mut config.online_images {
+            if same_path(&image.local_path, source) {
+                image.local_path = target.clone();
+            }
+        }
+        replace_config_path(&mut config.current_path, source, target);
+        replace_config_paths(&mut config.remaining_paths, source, target);
+        replace_config_paths(&mut config.skipped_paths, source, target);
+        replace_config_paths(&mut config.favorite_paths, source, target);
+    }
+    config.online_directory = Some(directory.to_string_lossy().into_owned());
+    rescan_config(config);
+    Ok(())
+}
+
+fn available_online_target_path(directory: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
+    let target = directory.join(file_name);
+    if !target.exists() {
+        return target;
+    }
+    let stem = Path::new(file_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("wallpaper");
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{value}"))
+        .unwrap_or_default();
+    directory.join(format!("{stem}-{}{}", Uuid::new_v4(), extension))
+}
+
+fn replace_config_path(path: &mut Option<String>, source: &str, target: &str) {
+    if path.as_deref().is_some_and(|path| same_path(path, source)) {
+        *path = Some(target.to_string());
+    }
+}
+
+fn replace_config_paths(paths: &mut [String], source: &str, target: &str) {
+    for path in paths {
+        if same_path(path, source) {
+            *path = target.to_string();
+        }
+    }
+}
+
+pub(crate) fn online_storage_bytes(config: &AppConfig) -> u64 {
+    config
+        .online_images
+        .iter()
+        .filter_map(|image| fs::metadata(&image.local_path).ok())
+        .map(|metadata| metadata.len())
+        .sum()
+}
+
+pub(crate) fn sort_online_images_by_downloaded_at(images: &mut [OnlineImage]) {
+    images.sort_by(|left, right| {
+        let left_time = OffsetDateTime::parse(&left.downloaded_at, &Rfc3339).ok();
+        let right_time = OffsetDateTime::parse(&right.downloaded_at, &Rfc3339).ok();
+        match (left_time, right_time) {
+            (Some(left_time), Some(right_time)) => right_time.cmp(&left_time),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
+fn update_source_result(
+    config: &mut AppConfig,
+    source_id: &str,
+    discovered: usize,
+    downloaded: usize,
+    last_error: Option<String>,
+) {
+    if let Some(source) = config
+        .online_sources
+        .iter_mut()
+        .find(|source| source.id == source_id)
+    {
+        source.last_run_at = Some(now_rfc3339());
+        source.next_run_at = Some(next_run_at(source.interval_hours));
+        source.last_discovered = discovered;
+        source.last_downloaded = downloaded;
+        source.last_error = last_error;
+    }
+}
+
+pub(crate) fn due_source_ids(config: &AppConfig, now: OffsetDateTime) -> Vec<String> {
+    config
+        .online_sources
+        .iter()
+        .filter(|source| source.enabled)
+        .filter(|source| {
+            source
+                .next_run_at
+                .as_deref()
+                .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
+                .map_or(true, |next_run_at| next_run_at <= now)
+        })
+        .map(|source| source.id.clone())
+        .collect()
+}
+
+pub(crate) fn prune_missing_online_images(config: &mut AppConfig) {
+    config
+        .online_images
+        .retain(|image| Path::new(&image.local_path).is_file());
+    if config
+        .current_path
+        .as_deref()
+        .is_some_and(|path| !Path::new(path).is_file())
+    {
+        config.current_path = None;
+    }
+}
+
+pub(crate) fn reconcile_online_candidates(
+    scan: &mut LibraryScan,
+    previous_images: &[OnlineImage],
+    next_images: &[OnlineImage],
+) {
+    let key = |path: &str| path.replace('/', "\\").to_ascii_lowercase();
+    let previous_paths: HashSet<_> = previous_images
+        .iter()
+        .map(|image| key(&image.local_path))
+        .collect();
+    let next_paths: HashSet<_> = next_images
+        .iter()
+        .map(|image| key(&image.local_path))
+        .collect();
+    scan.candidates.retain(|path| {
+        let candidate = key(path);
+        !previous_paths.contains(&candidate) || next_paths.contains(&candidate)
+    });
+    let mut candidate_paths: HashSet<_> = scan.candidates.iter().map(|path| key(path)).collect();
+    for image in next_images {
+        let image_path = Path::new(&image.local_path);
+        let image_key = key(&image.local_path);
+        if image_path.is_file() && candidate_paths.insert(image_key) {
+            scan.candidates.push(image.local_path.clone());
+        }
+    }
+}
+
+fn select_online_wallpaper(config: &mut AppConfig, image_id: &str) -> Result<String, String> {
+    let path = config
+        .online_images
+        .iter()
+        .find(|image| image.id == image_id)
+        .map(|image| image.local_path.clone())
+        .ok_or_else(|| "该在线图片已不存在。".to_string())?;
+    record_wallpaper_history(config);
+    config.current_path = Some(path.clone());
+    config.paused = true;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        is_public_host, is_upx8_cdn_url, upx8_category_label, upx8_request_url, UPX8_CATEGORIES,
+        due_source_ids, is_public_host,
+        is_upx8_cdn_url, merge_online_sources, migrate_online_directory,
+        prune_missing_online_images, reconcile_online_candidates, select_online_wallpaper,
+        sort_online_images_by_downloaded_at, upx8_category_label, upx8_request_url,
+        OnlineImage, OnlineSource, UPX8_CATEGORIES,
     };
+    use crate::domain::same_path;
+    use crate::state::{AppConfig, LibraryScan};
+    use std::collections::HashMap;
+    use std::fs;
+    use time::format_description::well_known::Rfc3339;
+    use time::OffsetDateTime;
+    use uuid::Uuid;
 
     #[test]
     fn rejects_loopback_and_private_ip_hosts() {
@@ -531,5 +1333,194 @@ mod tests {
             .unwrap();
 
         assert_eq!(super::decode_image_dimensions(&bytes).unwrap(), (1, 1));
+    }
+
+    #[test]
+    fn retains_only_upx8_when_migrating_saved_sources() {
+        let saved = OnlineSource {
+            id: "upx8-4k".into(),
+            enabled: true,
+            interval_hours: 6,
+            last_downloaded: 3,
+            ..OnlineSource::default()
+        };
+        let obsolete = OnlineSource {
+            id: "bing-cn-4k".into(),
+            enabled: true,
+            ..OnlineSource::default()
+        };
+        let sources = merge_online_sources(vec![saved, obsolete]);
+        assert_eq!(sources.len(), 1);
+        let upx8 = sources
+            .iter()
+            .find(|source| source.id == "upx8-4k")
+            .unwrap();
+        assert!(upx8.enabled);
+        assert_eq!(upx8.interval_hours, 6);
+        assert_eq!(upx8.last_downloaded, 3);
+    }
+
+    #[test]
+    fn orders_online_images_by_latest_download_with_a_stable_id_tiebreaker() {
+        let mut images = vec![
+            OnlineImage {
+                id: "same-time-b".into(),
+                downloaded_at: "2026-08-10T01:00:00Z".into(),
+                ..OnlineImage::default()
+            },
+            OnlineImage {
+                id: "old".into(),
+                downloaded_at: "2026-08-09T01:00:00Z".into(),
+                ..OnlineImage::default()
+            },
+            OnlineImage {
+                id: "same-time-a".into(),
+                downloaded_at: "2026-08-10T01:00:00Z".into(),
+                ..OnlineImage::default()
+            },
+            OnlineImage {
+                id: "invalid".into(),
+                downloaded_at: "not-a-timestamp".into(),
+                ..OnlineImage::default()
+            },
+            OnlineImage {
+                id: "new".into(),
+                downloaded_at: "2026-08-11T01:00:00Z".into(),
+                ..OnlineImage::default()
+            },
+        ];
+
+        sort_online_images_by_downloaded_at(&mut images);
+
+        assert_eq!(
+            images
+                .iter()
+                .map(|image| image.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["new", "same-time-a", "same-time-b", "old", "invalid"]
+        );
+    }
+
+    #[test]
+    fn removes_deleted_online_images_from_the_cached_candidate_set() {
+        let deleted = OnlineImage {
+            id: "online-image".into(),
+            local_path: "D:\\ZX Wallpaper\\Online\\deleted.jpg".into(),
+            ..OnlineImage::default()
+        };
+        let mut scan = LibraryScan {
+            folder_statuses: HashMap::new(),
+            candidates: vec![deleted.local_path.clone()],
+        };
+
+        reconcile_online_candidates(&mut scan, &[deleted], &[]);
+
+        assert!(scan.candidates.is_empty());
+    }
+
+    #[test]
+    fn refresh_prunes_missing_online_images_from_the_saved_state() {
+        let missing_path = std::env::temp_dir()
+            .join(format!("zx-wallpaper-missing-{}.jpg", Uuid::new_v4()));
+        let mut config = AppConfig {
+            current_path: Some(missing_path.to_string_lossy().into_owned()),
+            online_images: vec![OnlineImage {
+                id: "missing-online-image".into(),
+                local_path: missing_path.to_string_lossy().into_owned(),
+                ..OnlineImage::default()
+            }],
+            ..AppConfig::default()
+        };
+
+        prune_missing_online_images(&mut config);
+
+        assert!(config.online_images.is_empty());
+        assert!(config.current_path.is_none());
+    }
+
+    #[test]
+    fn selecting_an_online_image_pauses_automatic_switching() {
+        let mut config = AppConfig {
+            paused: false,
+            online_images: vec![OnlineImage {
+                id: "online-1".into(),
+                local_path: "D:\\ZX Wallpaper\\Online\\chosen.jpg".into(),
+                ..OnlineImage::default()
+            }],
+            ..AppConfig::default()
+        };
+
+        select_online_wallpaper(&mut config, "online-1").unwrap();
+
+        assert!(config.paused);
+        assert_eq!(
+            config.current_path.as_deref(),
+            Some("D:\\ZX Wallpaper\\Online\\chosen.jpg")
+        );
+    }
+
+    #[test]
+    fn schedules_only_enabled_sources_that_are_due() {
+        let now = OffsetDateTime::parse("2026-08-07T10:30:00Z", &Rfc3339).unwrap();
+        let config = AppConfig {
+            online_sources: vec![
+                OnlineSource {
+                    id: "due".into(),
+                    enabled: true,
+                    next_run_at: Some("2026-08-07T10:00:00Z".into()),
+                    ..OnlineSource::default()
+                },
+                OnlineSource {
+                    id: "future".into(),
+                    enabled: true,
+                    next_run_at: Some("2026-08-07T11:00:00Z".into()),
+                    ..OnlineSource::default()
+                },
+                OnlineSource {
+                    id: "disabled".into(),
+                    enabled: false,
+                    next_run_at: Some("2026-08-07T10:00:00Z".into()),
+                    ..OnlineSource::default()
+                },
+            ],
+            ..AppConfig::default()
+        };
+
+        assert_eq!(due_source_ids(&config, now), vec!["due"]);
+    }
+
+    #[test]
+    fn migrates_existing_online_images_when_the_managed_directory_changes() {
+        let root = std::env::temp_dir().join(format!("zx-wallpaper-{}", Uuid::new_v4()));
+        let old_directory = root.join("old");
+        let new_directory = root.join("new");
+        fs::create_dir_all(&old_directory).unwrap();
+        let old_path = old_directory.join("wallpaper.jpg");
+        fs::write(&old_path, b"wallpaper").unwrap();
+        let mut config = AppConfig {
+            online_directory: Some(old_directory.to_string_lossy().into_owned()),
+            online_images: vec![OnlineImage {
+                id: "online-1".into(),
+                local_path: old_path.to_string_lossy().into_owned(),
+                ..OnlineImage::default()
+            }],
+            favorite_paths: vec![old_path.to_string_lossy().into_owned()],
+            ..AppConfig::default()
+        };
+
+        migrate_online_directory(&mut config, &new_directory).unwrap();
+
+        let migrated_path = new_directory.join("wallpaper.jpg");
+        assert!(migrated_path.is_file());
+        assert!(!old_path.exists());
+        assert_eq!(
+            config.online_images[0].local_path,
+            migrated_path.to_string_lossy()
+        );
+        assert!(same_path(
+            &config.favorite_paths[0],
+            &migrated_path.to_string_lossy()
+        ));
+        fs::remove_dir_all(root).unwrap();
     }
 }

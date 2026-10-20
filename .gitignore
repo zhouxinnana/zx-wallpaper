@@ -9,3 +9,6 @@ output/
 *.log
 src-tauri/domain-tests/target/
 src-tauri/gen/
+.trellis
+.codebuddy
+.workbuddy

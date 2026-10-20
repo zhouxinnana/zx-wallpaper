@@ -19,6 +19,20 @@
         "minWidth": 980,
         "minHeight": 680,
         "visible": true
+      },
+      {
+        "label": "floating-widget",
+        "title": "ZX Wallpaper Widget",
+        "width": 36,
+        "height": 132,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "focus": false,
+        "visible": true
       }
     ],
     "security": {

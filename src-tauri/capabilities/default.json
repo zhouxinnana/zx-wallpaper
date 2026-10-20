@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the main wallpaper window.",
-  "windows": ["main"],
+  "description": "Default capability for the main wallpaper window and the desktop floating widget.",
+  "windows": ["main", "floating-widget"],
   "permissions": [
     "core:default",
     "dialog:default",

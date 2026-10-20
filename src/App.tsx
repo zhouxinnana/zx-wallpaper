@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { pathName, samePath } from "./shared/paths";
 import {
   Archive,
   ChevronRight,
@@ -835,9 +836,7 @@ function createBrowserPreviewApi(): DesktopRuntime {
   };
 }
 
-function pathName(path: string) { return path.split(/[/\\]/).pop() ?? path; }
 function parentPath(path: string) { const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")); return slash < 0 ? path : path.slice(0, slash); }
-function samePath(left: string, right: string) { return left.replace(/\//g, "\\").toLowerCase() === right.replace(/\//g, "\\").toLowerCase(); }
 function isAppState(value: unknown): value is AppState {
   return typeof value === "object" && value !== null && "folders" in value && "onlineImages" in value && "onlineSyncLogs" in value;
 }

@@ -31,6 +31,12 @@ fn path_key(path: &str) -> String {
     path.replace('/', "\\").to_lowercase()
 }
 
+/// 图片以路径标识：统一分隔符与大小写后比较（Windows 路径口径）。
+pub(crate) fn same_path(left: &str, right: &str) -> bool {
+    left.replace('/', "\\")
+        .eq_ignore_ascii_case(&right.replace('/', "\\"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{is_supported_wallpaper, take_next_path};
