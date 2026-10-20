@@ -20,6 +20,7 @@ default = ["desktop"]
 runtime = [
   "dep:image",
   "dep:notify",
+  "dep:ort",
   "dep:rand",
   "dep:reqwest",
   "dep:serde",
@@ -47,6 +48,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["bmp", "jpeg", "png", "webp"], optional = true }
 notify = { version = "8.2.0", default-features = false, optional = true }
+# ONNX Runtime 推理（Phase 4 AI 打标）。默认 features 含 download-binaries：
+# 构建期自动拉取预编译 onnxruntime 动态库（CPU execution provider，Windows x64 MSVC）。
+# 当前 ort 2.x 系列均为 rc 预发布，钉死 2.0.0-rc.15（2026-10-19 发布）。
+ort = { version = "2.0.0-rc.15", optional = true }
 rand = { version = "0.9", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }

@@ -5,6 +5,7 @@ mod online;
 mod preferences;
 mod state;
 mod system;
+mod tagging;
 mod wallpaper;
 mod widget;
 
