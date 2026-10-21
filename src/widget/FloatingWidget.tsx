@@ -368,41 +368,57 @@ export default function FloatingWidget({ runtime }: { runtime?: DesktopRuntime }
           </div>
         ) : (
           <div className="widget-actions" onPointerDown={(event) => event.stopPropagation()}>
-            <button className="widget-action" type="button" aria-label="回到上一张壁纸" disabled={!previousPath} onClick={goPrevious}>
+            <button
+              className="widget-action"
+              type="button"
+              title="上一张"
+              aria-label="回到上一张壁纸"
+              disabled={!previousPath}
+              onClick={goPrevious}
+            >
               <span className="widget-btn"><ChevronLeft size={16} /></span>
-              <small>上一张</small>
-            </button>
-            <button className="widget-action" type="button" aria-label={paused ? "恢复切换" : "暂停切换"} onClick={togglePaused}>
-              <span className="widget-btn">{paused ? <Play size={15} /> : <Pause size={15} />}</span>
-              <small>{paused ? "恢复" : "暂停"}</small>
-            </button>
-            <button className="widget-action" type="button" aria-label="切换下一张壁纸" onClick={goNext}>
-              <span className="widget-btn"><ChevronRight size={16} /></span>
-              <small>下一张</small>
             </button>
             <button
               className="widget-action"
               type="button"
+              title={paused ? "恢复自动切换" : "暂停自动切换"}
+              aria-label={paused ? "恢复切换" : "暂停切换"}
+              onClick={togglePaused}
+            >
+              <span className="widget-btn">{paused ? <Play size={15} /> : <Pause size={15} />}</span>
+            </button>
+            <button className="widget-action" type="button" title="下一张" aria-label="切换下一张壁纸" onClick={goNext}>
+              <span className="widget-btn"><ChevronRight size={16} /></span>
+            </button>
+            <button
+              className="widget-action"
+              type="button"
+              title="跳过当前壁纸"
               aria-label="跳过当前壁纸"
               disabled={!currentPath}
               onClick={skipCurrent}
             >
               <span className="widget-btn"><SkipForward size={15} /></span>
-              <small>跳过</small>
             </button>
             <button
               className={isFavorite ? "widget-action is-fav" : "widget-action"}
               type="button"
+              title={isFavorite ? "取消喜欢" : "喜欢"}
               aria-label={`${isFavorite ? "取消喜欢" : "喜欢"} ${displayName}`}
               disabled={!currentPath}
               onClick={toggleFavorite}
             >
               <span className="widget-btn"><Heart size={15} fill={isFavorite ? "currentColor" : "none"} /></span>
-              <small>喜欢</small>
             </button>
-            <button className="widget-action is-danger" type="button" aria-label={`删除 ${displayName}`} disabled={!currentPath} onClick={() => setConfirming(true)}>
+            <button
+              className="widget-action is-danger"
+              type="button"
+              title="删除当前壁纸"
+              aria-label={`删除 ${displayName}`}
+              disabled={!currentPath}
+              onClick={() => setConfirming(true)}
+            >
               <span className="widget-btn"><Trash2 size={15} /></span>
-              <small>删除</small>
             </button>
           </div>
         )}

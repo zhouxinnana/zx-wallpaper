@@ -4,7 +4,7 @@ use crate::state::{lock_config, mutate_without_rescan, AppState, RuntimeState, W
 
 const WIDGET_COLLAPSED_SIZE: (f64, f64) = (36.0, 132.0);
 /// 展开卡片尺寸：高度须容纳 128 缩略图 + 文件名/状态两行 + 分隔线 + 2×3 操作区（约 326）。
-const WIDGET_EXPANDED_SIZE: (f64, f64) = (248.0, 332.0);
+const WIDGET_EXPANDED_SIZE: (f64, f64) = (248.0, 266.0);
 /// 显示器信息（逻辑单位、全局坐标）。
 #[derive(Clone, Copy)]
 struct Frame {
