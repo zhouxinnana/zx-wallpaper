@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "质量检查清单，含类型与测试要求"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "检查是否重复实现 grid/卡片而非复用在线图库实现"}

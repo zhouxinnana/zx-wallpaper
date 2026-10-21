@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "前端规范入口与开发前检查清单"}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "Phase 1 新增 src/shared/ 与 src/widget/ 文件须遵循目录约定；IPC 新增命令走 4 文件路径"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Phase 3/4 新增 IPC 需手工镜像 TS 类型与 AppState 守卫"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Phase 2 浮窗新按钮、Phase 4 设置区 UI 遵循组件约定（run() 包装、ConfirmDialog 语义）"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "浮窗与设置页读后端快照流，不引入状态库"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "各阶段门禁与测试模式"}
+{"file": ".trellis/tasks/10-20-widget-debt-ai-tagging/research/findings.md", "reason": "runtime.rs 行段分布、容错点、既有命令与测试基线的事实清单"}

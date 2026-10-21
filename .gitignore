@@ -9,6 +9,9 @@ output/
 *.log
 src-tauri/domain-tests/target/
 src-tauri/gen/
-.trellis
+# Trellis：tasks / spec / scripts 入库（任务历史与规范需要跨机共享），
+# 只忽略本地运行时产物。其余运行时文件由 .trellis/.gitignore 自己忽略。
+.trellis/worktrees/
+.trellis/.template-hashes.json
 .codebuddy
 .workbuddy

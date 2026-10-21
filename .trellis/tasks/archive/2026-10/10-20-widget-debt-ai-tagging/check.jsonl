@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "检查门禁与架构约束是否被违反"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "检查 IPC 类型镜像与 AppState 守卫"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "检查浮窗/设置页组件约定与可访问性"}
+{"file": ".trellis/tasks/10-20-widget-debt-ai-tagging/research/findings.md", "reason": "对照现状事实核查拆分与迁移是否遗漏"}

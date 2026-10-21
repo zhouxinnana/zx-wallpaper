@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "AppState 单一数据源与 mutate 后全量刷新模式，决定 libraryImages 的下发方式"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "View 改名与 AppState 新字段需要前后端类型同步"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "抽取 GalleryCard 时的组件组织与命名约定"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "新增 Rust 命令与前端 invoke 的跨层契约"}
