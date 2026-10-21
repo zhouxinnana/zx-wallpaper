@@ -311,23 +311,41 @@ impl RuntimeState {
         })?;
 
         let state_file = directory.join(STATE_FILE_NAME);
-        let mut config = match fs::read_to_string(&state_file) {
-            Ok(contents) => match serde_json::from_str(&contents) {
-                Ok(config) => config,
-                Err(error) => {
-                    // 解析失败：把损坏文件改名备份后按默认配置重建，避免一次损坏让应用无法启动。
-                    let backup = directory.join(format!(
-                        "{STATE_FILE_NAME}.corrupt-{}",
-                        corrupt_backup_suffix()
-                    ));
-                    let _ = fs::rename(&state_file, &backup);
-                    eprintln!(
-                        "壁纸状态文件解析失败，已备份为 {} 并按默认配置重建：{error}",
-                        backup.display()
-                    );
-                    AppConfig::default()
+        let mut config = match fs::read(&state_file) {
+            Ok(bytes) => {
+                // 按字节读取再自行转换编码：fs::read_to_string 对非法 UTF-8 会抛 InvalidData，
+                // 那样会走「IO 故障」分支把应用打死，而它其实是内容损坏，必须走修复分支。
+                let parsed = std::str::from_utf8(&bytes)
+                    .map_err(|error| format!("壁纸状态文件不是合法的 UTF-8（{error}）"))
+                    .and_then(|contents| {
+                        serde_json::from_str::<AppConfig>(contents)
+                            .map_err(|error| format!("壁纸状态文件解析失败（{error}）"))
+                    });
+                match parsed {
+                    Ok(config) => config,
+                    Err(reason) => {
+                        // 内容损坏：把损坏文件改名备份后按默认配置重建，避免一次损坏让应用无法启动。
+                        let backup = directory.join(format!(
+                            "{STATE_FILE_NAME}.corrupt-{}",
+                            corrupt_backup_suffix()
+                        ));
+                        let _ = fs::rename(&state_file, &backup);
+                        let fallback = AppConfig::default();
+                        // 立刻写回默认配置，避免磁盘停留在「状态文件不存在」的中间态。
+                        match persist(&state_file, &fallback) {
+                            Ok(()) => eprintln!(
+                                "{reason}，已备份为 {} 并按默认配置重建",
+                                backup.display()
+                            ),
+                            Err(error) => eprintln!(
+                                "{reason}，已备份为 {}，但重建默认配置失败：{error}",
+                                backup.display()
+                            ),
+                        }
+                        fallback
+                    }
                 }
-            },
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => AppConfig::default(),
             Err(error) => return Err(format!("Unable to read saved wallpaper settings: {error}")),
         };
@@ -675,6 +693,39 @@ mod tests {
 
         let backups = corrupt_backups(&directory);
         assert_eq!(backups.len(), 1, "corrupt file should be renamed to a backup");
+
+        drop(state);
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn load_from_dir_recovers_when_state_file_is_not_valid_utf8() {
+        // 断电写半截、磁盘坏块等会产生含非法字节的文件。这类内容必须走修复分支，
+        // 不能被当成磁盘 IO 故障把应用打死（回归：旧实现用 fs::read_to_string 会启动失败）。
+        let directory = unique_temp_dir("corrupt-utf8");
+        fs::create_dir_all(&directory).expect("create temp config dir");
+        let payload: &[u8] = &[0xff, 0xfe, 0x00, 0x00, b'g', b'a', b'r', 0x80, 0x81];
+        fs::write(directory.join(STATE_FILE_NAME), payload).expect("write corrupt state file");
+
+        let state = RuntimeState::load_from_dir(&directory).expect("load should recover");
+
+        let config = state.config.lock().expect("config lock");
+        assert!(config.folders.is_empty());
+        assert_eq!(config.interval_minutes, default_interval_minutes());
+        drop(config);
+
+        let backups = corrupt_backups(&directory);
+        assert_eq!(backups.len(), 1, "corrupt file should be renamed to a backup");
+        assert_eq!(
+            fs::read(&backups[0]).expect("read backup"),
+            payload,
+            "backup must preserve the original broken bytes verbatim"
+        );
+
+        let rebuilt = fs::read_to_string(directory.join(STATE_FILE_NAME))
+            .expect("default config should be written back immediately");
+        let parsed: AppConfig = serde_json::from_str(&rebuilt).expect("rebuilt file is valid json");
+        assert!(parsed.folders.is_empty());
 
         drop(state);
         let _ = fs::remove_dir_all(&directory);
