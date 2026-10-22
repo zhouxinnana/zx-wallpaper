@@ -92,6 +92,9 @@ select:hover, input:hover:not(:disabled) { border-color: rgba(192, 132, 252, .4)
 .content-section { padding: 20px 24px 0; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; margin-bottom: 12px; }
 .section-actions { display: flex; gap: 8px; }
+/* 图库筛选行：筛选框 + 分类 + 排序 + 刷新，窄屏自动换行，不挤压标题。 */
+.gallery-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.gallery-controls .inline-select { gap: 5px; }
 .section-filter-input { width: 150px; padding: 4px 8px; font-size: 11px; }
 .history-strip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
 .history-item { position: relative; flex: 0 0 96px; height: 64px; padding: 0; overflow: hidden; border: 1px solid rgba(255, 255, 255, .1); border-radius: 8px; background: #171226; cursor: pointer; }
@@ -149,24 +152,25 @@ select:hover, input:hover:not(:disabled) { border-color: rgba(192, 132, 252, .4)
 .metric span, .metric small { display: block; color: rgba(226, 220, 245, .45); font-size: 10px; }
 .metric strong { display: inline-block; margin: 6px 4px 2px 0; color: #efeafa; font: 600 18px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; }
 .source-list { border: 1px solid rgba(255, 255, 255, .08); border-radius: 12px; overflow: hidden; background: rgba(255, 255, 255, .02); }
-.source-row { padding: 16px; background: rgba(255, 255, 255, .03); }
-.source-row-header { display: grid; grid-template-columns: 36px minmax(210px, 1fr) auto; gap: 14px; align-items: center; }
+.source-row { padding: 12px; background: rgba(255, 255, 255, .03); }
+/* 抓取来源嵌在图库右侧栏（可用宽度约 254px）：开关 + 文案占第一行，操作组整体换行到第二行。 */
+.source-row-header { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 10px 12px; align-items: center; }
 .source-copy { min-width: 0; display: grid; gap: 3px; }
 .source-copy strong { color: #efeafa; font-size: 12px; font-weight: 500; }
 .source-copy span { overflow: hidden; color: rgba(226, 220, 245, .45); font: 11px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.source-copy small { color: rgba(226, 220, 245, .6); font: 10px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; }
+.source-copy small { color: rgba(226, 220, 245, .6); font: 10px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; overflow-wrap: anywhere; }
 .source-error { color: #f87171; font-size: 10px; }
-.source-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.source-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; }
 .source-actions .inline-select { gap: 5px; }
-  .source-category-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 18px; border-top: 1px solid rgba(255, 255, 255, .06); }
-  .source-category { min-height: 82px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px; border-right: 1px solid rgba(255, 255, 255, .06); border-bottom: 1px solid rgba(255, 255, 255, .06); }
-  .source-category:nth-child(2n) { border-right: 0; }
-  .source-category:nth-last-child(-n+2) { border-bottom: 0; }
+/* 分类同步列表：单列。两列时每格只剩约 120px，「同步」按钮会被挤到换行或溢出。 */
+.source-category-grid { display: grid; grid-template-columns: minmax(0, 1fr); margin-top: 12px; border-top: 1px solid rgba(255, 255, 255, .06); }
+.source-category { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 2px; border-bottom: 1px solid rgba(255, 255, 255, .06); }
+.source-category:last-child { border-bottom: 0; }
 .source-category > div { min-width: 0; display: grid; gap: 3px; }
-.source-category strong { color: #efeafa; font-size: 11px; font-weight: 500; }
-.source-category small { color: rgba(226, 220, 245, .45); font: 10px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; white-space: nowrap; }
+.source-category strong { overflow: hidden; color: #efeafa; font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.source-category small { overflow: hidden; color: rgba(226, 220, 245, .45); font: 10px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .source-category em { overflow: hidden; color: #f87171; font-size: 9px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
-  .source-category .action-button { flex: 0 0 auto; }
+.source-category .action-button { flex: 0 0 auto; }
 .sync-log-panel { margin-top: 28px; padding-top: 16px; border-top: 1px solid rgba(255, 255, 255, .08); }
 .side-panel-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: rgba(226, 220, 245, .72); font-size: 11px; font-weight: 600; }
 .side-panel-heading small { min-width: 18px; padding: 1px 5px; border-radius: 8px; color: rgba(226, 220, 245, .45); background: rgba(255, 255, 255, .06); font: 10px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; text-align: center; }
@@ -208,6 +212,48 @@ select:hover, input:hover:not(:disabled) { border-color: rgba(192, 132, 252, .4)
 .online-image-card strong { color: #efeafa; font-size: 11px; font-weight: 500; }
 .online-image-card span { margin-top: 3px; color: rgba(226, 220, 245, .45); font: 10px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; }
 .image-actions { display: flex; gap: 4px; margin-top: 7px; }
+.gallery-source-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.gallery-source-tab { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid rgba(255, 255, 255, .1); border-radius: 999px; background: rgba(255, 255, 255, .02); color: rgba(226, 220, 245, .68); font-size: 11px; cursor: pointer; }
+.gallery-source-tab:hover { border-color: rgba(255, 255, 255, .2); color: #efeafa; }
+.gallery-source-tab.is-active { border-color: rgba(147, 51, 234, .6); background: rgba(147, 51, 234, .16); color: #efeafa; }
+.gallery-source-tab small { color: rgba(226, 220, 245, .42); font: 10px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; }
+.gallery-source-flag { padding: 0 5px; border-radius: 4px; background: rgba(251, 191, 36, .14); color: #fbbf24; font-size: 10px; }
+.gallery-hint { margin: 0 0 10px; color: rgba(226, 220, 245, .4); font-size: 11px; }
+.gallery-batch-bar { position: sticky; z-index: 2; top: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; padding: 8px 10px; border: 1px solid rgba(147, 51, 234, .34); border-radius: 10px; background: rgba(20, 12, 38, .94); backdrop-filter: blur(6px); }
+.gallery-batch-bar > span { margin-right: 4px; color: #efeafa; font-size: 12px; }
+.gallery-batch-divider { width: 1px; height: 18px; margin: 0 2px; background: rgba(255, 255, 255, .12); }
+.online-gallery { position: relative; }
+.online-image-card { cursor: pointer; }
+.online-image-card > img { user-select: none; }
+.gallery-marquee { position: absolute; z-index: 3; border: 2px solid rgba(196, 181, 253, .95); background: rgba(139, 92, 246, .28); border-radius: 6px; box-shadow: 0 0 0 1px rgba(76, 29, 149, .5), 0 6px 20px rgba(76, 29, 149, .35); pointer-events: none; }
+.gallery-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px; margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, .06); }
+.gallery-pagination-summary { margin-right: 8px; color: rgba(226, 220, 245, .5); font: 10px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; }
+.gallery-pagination-item { display: inline-flex; align-items: center; gap: 4px; }
+.gallery-pagination-item i { padding: 0 2px; color: rgba(226, 220, 245, .35); font-style: normal; }
+.gallery-page-button { min-width: 26px; height: 24px; border: 1px solid rgba(255, 255, 255, .1); border-radius: 6px; background: rgba(255, 255, 255, .02); color: rgba(226, 220, 245, .68); font: 11px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; cursor: pointer; }
+.gallery-page-button:hover { border-color: rgba(255, 255, 255, .22); color: #efeafa; }
+.gallery-page-button.is-active { border-color: rgba(147, 51, 234, .7); background: rgba(147, 51, 234, .2); color: #efeafa; }
+.gallery-page-size { margin-left: 8px; }
+.online-image-card.is-selected { border-color: rgba(147, 51, 234, .75); box-shadow: 0 0 0 1px rgba(147, 51, 234, .45); }
+.gallery-card-select { position: absolute; z-index: 1; top: 6px; left: 6px; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: rgba(6, 4, 14, .72); border: 1px solid rgba(255, 255, 255, .16); cursor: pointer; }
+.gallery-card-select input { width: 13px; height: 13px; margin: 0; accent-color: #9333ea; cursor: pointer; }
+.online-image-card { position: relative; }
+.gallery-card-tags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
+.gallery-card-tags .tag { font-size: 9px; padding: 1px 5px; }
+.storage-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.side-panel { margin-bottom: 16px; }
+.side-panel-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: rgba(226, 220, 245, .62); font-size: 12px; }
+.storage-compact { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.storage-compact > div { padding: 8px; border: 1px solid rgba(255, 255, 255, .08); border-radius: 10px; background: rgba(255, 255, 255, .03); }
+.storage-compact span, .storage-compact small { display: block; color: rgba(226, 220, 245, .45); font-size: 9px; }
+.storage-compact strong { display: block; margin: 4px 0 2px; color: #efeafa; font: 600 14px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; }
+.side-collapse { margin-top: 16px; border: 1px solid rgba(255, 255, 255, .08); border-radius: 12px; background: rgba(255, 255, 255, .02); }
+.side-collapse > summary { padding: 9px 10px; color: rgba(226, 220, 245, .72); font-size: 12px; cursor: pointer; list-style: none; }
+.side-collapse > summary::-webkit-details-marker { display: none; }
+.side-collapse[open] > summary { border-bottom: 1px solid rgba(255, 255, 255, .08); color: #efeafa; }
+.side-collapse > *:not(summary) { margin: 10px; }
+.side-collapse > .source-list { margin: 0; border: 0; border-radius: 0; }
+.side-collapse > .sync-log-list, .side-collapse > .sync-log-detail, .side-collapse > .sync-log-empty { margin: 0; }
 .original-viewer-backdrop { position: fixed; z-index: 50; inset: 0; display: grid; place-items: center; padding: 28px; background: rgba(4, 2, 10, .84); backdrop-filter: blur(6px); }
 .original-viewer { width: min(1180px, 100%); max-height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; border: 1px solid rgba(255, 255, 255, .14); border-radius: 14px; background: #0e0a1c; box-shadow: 0 20px 60px rgba(0, 0, 0, .55); }
 .original-viewer header { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px 8px 14px; border-bottom: 1px solid rgba(255, 255, 255, .08); }
@@ -222,6 +268,15 @@ select:hover, input:hover:not(:disabled) { border-color: rgba(192, 132, 252, .4)
 .original-viewer-stage img { display: block; max-width: 100%; max-height: calc(100vh - 128px); object-fit: contain; }
 .side-setting { display: grid; gap: 7px; margin-bottom: 18px; padding-bottom: 16px; border-bottom: 1px solid rgba(255, 255, 255, .08); }
 .side-setting > span, .side-setting label { color: rgba(226, 220, 245, .45); font-size: 10px; }
+/* 黑名单明细：URL 可能很长，限高滚动 + 单行省略，右侧带单条移出按钮。
+   ul 必须显式约束列宽（minmax(0,1fr)），否则 grid 列会被不换行的 URL 撑破侧栏。 */
+.excluded-list { border: 1px solid rgba(255, 255, 255, .08); border-radius: 8px; background: rgba(255, 255, 255, .02); }
+.excluded-list > summary { padding: 6px 8px; color: rgba(226, 220, 245, .58); font-size: 10px; cursor: pointer; list-style: none; }
+.excluded-list > summary::-webkit-details-marker { display: none; }
+.excluded-list > ul { max-height: 168px; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin: 0; padding: 0 8px 8px; list-style: none; }
+.excluded-list li { display: flex; align-items: center; gap: 4px; }
+.excluded-list code { flex: 1; min-width: 0; overflow: hidden; color: rgba(226, 220, 245, .5); font: 9px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.excluded-list .icon-button { flex: 0 0 auto; }
 .side-setting strong { overflow: hidden; color: rgba(226, 220, 245, .72); font: 11px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .side-setting label { display: grid; gap: 6px; }
 .online-settings > p { color: rgba(226, 220, 245, .45); font-size: 10px; line-height: 1.55; }
@@ -242,6 +297,12 @@ select:hover, input:hover:not(:disabled) { border-color: rgba(192, 132, 252, .4)
 .segmented-control button:disabled { opacity: .48; }
 .shortcut-editor { display: flex; align-items: center; gap: 8px; }
 .shortcut-editor input { width: 128px; font-family: "Cascadia Mono", "JetBrains Mono", Consolas, monospace; }
+/* 切换间隔手动输入：数字框 + 单位 + 等价值预览（如 90 → 1 小时 30 分钟）。 */
+.interval-editor { display: flex; align-items: center; gap: 6px; }
+.interval-editor input { width: 84px; text-align: right; font-family: "Cascadia Mono", "JetBrains Mono", Consolas, monospace; }
+.interval-editor .interval-unit { color: rgba(226, 220, 245, .6); font-size: 11px; white-space: nowrap; }
+.interval-hint { color: rgba(226, 220, 245, .45); font-size: 10px; white-space: nowrap; }
+.interval-hint.is-clamped { color: #fbbf24; }
 .shortcut-status { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .shortcut-status small { overflow: hidden; max-width: 180px; color: #f87171; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .tray-preview { width: 200px; padding: 0 !important; overflow: hidden; border: 1px solid rgba(255, 255, 255, .12); border-radius: 10px; background: #171226; }
@@ -330,8 +391,6 @@ html[data-window="floating-widget"], html[data-window="floating-widget"] body { 
   .hero-details { padding-right: 18px; padding-left: 18px; }
   .hero-controls, .content-section { padding-right: 16px; padding-left: 16px; }
   .online-layout { grid-template-columns: minmax(0, 1fr) 272px; }
-  .source-row-header { grid-template-columns: 36px minmax(170px, 1fr); }
-  .source-actions { grid-column: 2; justify-content: flex-start; }
 }
 
 @media (max-width: 760px) {
@@ -359,7 +418,6 @@ html[data-window="floating-widget"], html[data-window="floating-widget"] body { 
   .online-primary { border-right: 0; }
   .online-settings { border-top: 1px solid rgba(255, 255, 255, .08); }
   .source-list { overflow-x: auto; }
-  .source-row { min-width: 640px; }
   .original-viewer-backdrop { padding: 14px; }
   .original-viewer-stage img { max-height: calc(100vh - 96px); }
   .storage-overview, .dwm-grid, .lab-parallax { grid-template-columns: 1fr; }

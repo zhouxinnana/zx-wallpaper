@@ -1,8 +1,8 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import type { AppState, DesktopRuntime, ImageTag, TaggingStatus } from "./runtime/types";
+import type { AppConfig, AppState, DesktopRuntime, ImageTag, TaggingStatus } from "./runtime/types";
 
 afterEach(cleanup);
 
@@ -208,8 +208,8 @@ describe("ZX Wallpaper application shell", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await screen.findByRole("button", { name: "在线发现" });
-    await user.click(screen.getByRole("button", { name: "在线发现" }));
+    await screen.findByRole("button", { name: "图库" });
+    await user.click(screen.getByRole("button", { name: "图库" }));
 
     expect(await screen.findByText("UPX8 综合壁纸 4K", { selector: "strong" })).toBeTruthy();
     expect(screen.queryByText("添加自定义 HTTPS 单页来源")).toBeNull();
@@ -219,7 +219,7 @@ describe("ZX Wallpaper application shell", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+    await user.click(await screen.findByRole("button", { name: "图库" }));
     const interval = screen.getByLabelText("抓取间隔 UPX8 综合壁纸 4K");
     await user.selectOptions(interval, "6");
 
@@ -275,7 +275,7 @@ describe("ZX Wallpaper application shell", () => {
     runtime.runUpx8Category = runUpx8Category;
     render(<App runtime={runtime} />);
 
-    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+    await user.click(await screen.findByRole("button", { name: "图库" }));
     await user.click(screen.getByRole("button", { name: "同步分类 风景" }));
 
     expect(runUpx8Category).toHaveBeenCalledWith("nature");
@@ -332,8 +332,8 @@ describe("ZX Wallpaper application shell", () => {
     runtime.runUpx8Category = runUpx8Category;
     render(<App runtime={runtime} />);
 
-    await user.click(await screen.findByRole("button", { name: "在线发现" }));
-    expect(screen.getByText("尚未下载在线图片")).toBeTruthy();
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+    expect(screen.getByText("图库还没有图片，先添加壁纸目录或同步在线来源")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "同步分类 风景" }));
 
     expect(await screen.findByRole("button", { name: "查看原图 online-01.jpg" })).toBeTruthy();
@@ -376,7 +376,7 @@ describe("ZX Wallpaper application shell", () => {
     });
     render(<App runtime={runtime} />);
 
-    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+    await user.click(await screen.findByRole("button", { name: "图库" }));
 
     expect(screen.queryByText("HTTP 200")).toBeNull();
     await user.click(screen.getByRole("button", { name: "查看风景同步详情" }));
@@ -400,7 +400,7 @@ describe("ZX Wallpaper application shell", () => {
     runtime.deleteOnlineImage = deleteOnlineImage;
     render(<App runtime={runtime} />);
 
-    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+    await user.click(await screen.findByRole("button", { name: "图库" }));
     await user.click(screen.getByRole("button", { name: "设为壁纸" }));
 
     expect((await screen.findByRole("status")).textContent).toContain("正在设置壁纸并同步所有显示器");
@@ -419,7 +419,7 @@ describe("ZX Wallpaper application shell", () => {
     runtime.toggleFavorite = toggleFavorite;
     render(<App runtime={runtime} />);
 
-    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+    await user.click(await screen.findByRole("button", { name: "图库" }));
     await user.click(screen.getByRole("button", { name: "喜欢 online-01.jpg" }));
 
     expect(toggleFavorite).toHaveBeenCalledWith("D:\\ZX Wallpaper\\Online\\online-01.jpg");
@@ -459,50 +459,28 @@ describe("ZX Wallpaper application shell", () => {
     runtime.rescanFolders = rescanFolders;
     render(<App runtime={runtime} />);
 
-    await user.click(await screen.findByRole("button", { name: "在线发现" }));
-    await user.click(screen.getByRole("button", { name: "刷新已下载图片" }));
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+    await user.click(screen.getByRole("button", { name: "刷新图库" }));
 
     expect(rescanFolders).toHaveBeenCalledOnce();
-    expect((await screen.findByRole("status")).textContent).toContain("已刷新图片列表");
+    expect((await screen.findByRole("status")).textContent).toContain("图库已刷新");
   });
 
-  it("loads the next online image batch when the gallery end enters the viewport", async () => {
-    const observers: MockIntersectionObserver[] = [];
-    vi.stubGlobal("IntersectionObserver", class MockIntersectionObserver {
-      readonly elements: Element[] = [];
-      constructor(readonly callback: IntersectionObserverCallback) {
-        observers.push(this);
-      }
-      observe(element: Element) { this.elements.push(element); }
-      unobserve() {}
-      disconnect() {}
-      takeRecords() { return []; }
-      readonly root = null;
-      readonly rootMargin = "0px";
-      readonly thresholds = [0];
-    });
+  it("moves to the next page instead of extending the list infinitely", async () => {
+    const user = userEvent.setup();
+    render(<App runtime={createOnlineGalleryRuntime(60)} />);
 
-    try {
-      const user = userEvent.setup();
-      render(<App runtime={createOnlineGalleryRuntime(25)} />);
+    await user.click(await screen.findByRole("button", { name: "图库" }));
 
-      await user.click(await screen.findByRole("button", { name: "在线发现" }));
+    expect(screen.getByText("online-01.jpg")).toBeTruthy();
+    expect(screen.queryByText("online-60.jpg")).toBeNull();
+    expect(screen.getByText(/第 1 \/ 2 页/)).toBeTruthy();
 
-      expect(screen.getByText("online-01.jpg")).toBeTruthy();
-      expect(screen.queryByText("online-25.jpg")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "下一页" }));
 
-      const loadMore = screen.getByLabelText("加载更多在线图片");
-      const observer = observers.find((candidate) => candidate.elements.includes(loadMore));
-      expect(observer).toBeTruthy();
-      observer?.callback(
-        [{ isIntersecting: true, target: loadMore } as unknown as IntersectionObserverEntry],
-        observer,
-      );
-
-      expect(await screen.findByText("online-25.jpg")).toBeTruthy();
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    expect(await screen.findByText("online-60.jpg")).toBeTruthy();
+    expect(screen.queryByText("online-01.jpg")).toBeNull();
+    expect(screen.getByText(/第 2 \/ 2 页/)).toBeTruthy();
   });
 
   it("prewarms the visible online images and the next batch", async () => {
@@ -510,10 +488,10 @@ describe("ZX Wallpaper application shell", () => {
     const prewarmImageAssets = vi.fn(() => Promise.resolve());
     render(<App runtime={createOnlineGalleryRuntime(50, undefined, prewarmImageAssets)} />);
 
-    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+    await user.click(await screen.findByRole("button", { name: "图库" }));
 
     await waitFor(() => expect(prewarmImageAssets).toHaveBeenCalledWith(
-      Array.from({ length: 48 }, (_, index) => `D:\\ZX Wallpaper\\Online\\online-${String(index + 1).padStart(2, "0")}.jpg`),
+      Array.from({ length: 50 }, (_, index) => `D:\\ZX Wallpaper\\Online\\online-${String(index + 1).padStart(2, "0")}.jpg`),
       "grid",
     ));
   });
@@ -538,7 +516,7 @@ describe("ZX Wallpaper application shell", () => {
     try {
       const user = userEvent.setup();
       render(<App runtime={createOnlineGalleryRuntime(25, getImageAsset)} />);
-      await user.click(await screen.findByRole("button", { name: "在线发现" }));
+      await user.click(await screen.findByRole("button", { name: "图库" }));
       getImageAsset.mockClear();
 
       expect(getImageAsset).not.toHaveBeenCalled();
@@ -573,6 +551,34 @@ describe("smart tagging", () => {
     await user.click(toggle);
 
     expect(setTaggingEnabled).toHaveBeenCalledWith(true);
+  });
+
+  it("accepts a manually typed automatic switching interval and clamps it to the supported range", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const updateConfig = vi.fn(async (patch: Partial<AppConfig>) => ({ ...(await runtime.getState()), ...patch }));
+    runtime.updateConfig = updateConfig;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "设置" }));
+
+    const input = screen.getByLabelText("切换间隔（分钟）") as HTMLInputElement;
+    expect(input.value).toBe("30");
+
+    await user.clear(input);
+    await user.type(input, "90");
+    expect(screen.getByText("1 小时 30 分钟")).toBeTruthy();
+    await user.tab();
+
+    expect(updateConfig).toHaveBeenCalledWith({ intervalMinutes: 90 });
+
+    updateConfig.mockClear();
+    await user.clear(input);
+    await user.type(input, "0");
+    await user.tab();
+
+    expect(updateConfig).toHaveBeenCalledWith({ intervalMinutes: 1 });
+    await waitFor(() => expect(input.value).toBe("1"));
   });
 
   it("shows model download progress while the tagging model is downloading", async () => {
@@ -623,11 +629,11 @@ describe("smart tagging", () => {
     });
     render(<App runtime={runtime} />);
 
-    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+    await user.click(await screen.findByRole("button", { name: "图库" }));
     expect(screen.getByText("online-01.jpg")).toBeTruthy();
     expect(screen.getByText("online-02.jpg")).toBeTruthy();
 
-    const filter = screen.getByLabelText("按分类筛选图片");
+    const filter = screen.getByLabelText("按分类筛选图库图片");
     await user.selectOptions(filter, "nature");
     expect(screen.getByText("online-01.jpg")).toBeTruthy();
     expect(screen.queryByText("online-02.jpg")).toBeNull();
@@ -670,9 +676,9 @@ describe("smart tagging", () => {
     const runtime = createOnlineGalleryRuntime(1, undefined, undefined, { taggingEnabled: false });
     render(<App runtime={runtime} />);
 
-    await user.click(await screen.findByRole("button", { name: "在线发现" }));
+    await user.click(await screen.findByRole("button", { name: "图库" }));
 
-    expect(screen.queryByLabelText("按分类筛选图片")).toBeNull();
+    expect(screen.queryByLabelText("按分类筛选图库图片")).toBeNull();
   });
 });
 
@@ -693,6 +699,7 @@ function createOnlineGalleryRuntime(
   getImageAsset = vi.fn(() => Promise.resolve({ src: "http://wallpaper-asset.localhost/thumbnail", width: 768, height: 432, status: "ready" as const })),
   prewarmImageAssets = vi.fn(() => Promise.resolve()),
   tagging: { imageTags?: ImageTag[]; taggingEnabled?: boolean; status?: TaggingStatus } = {},
+  stateOverrides: Partial<AppState> = {},
 ): DesktopRuntime {
   const state: AppState = {
     folders: [],
@@ -725,6 +732,7 @@ function createOnlineGalleryRuntime(
         lastError: null,
       },
     ],
+    excludedImageUrls: [],
     onlineImages: Array.from({ length: imageCount }, (_, index) => {
       const number = String(index + 1).padStart(2, "0");
       return {
@@ -753,10 +761,12 @@ function createOnlineGalleryRuntime(
       { path: "D:\\Wallpapers\\next.jpg", previewUrl: "data:image/jpeg;base64,next" },
     ],
     folderStatuses: {},
+    libraryImages: [],
     onlineStorageBytes: 0,
     globalShortcutRegistered: false,
     shortcutStatus: { state: "disabled" },
     skipShortcutStatus: { state: "disabled" },
+    ...stateOverrides,
   };
   const unchanged = () => Promise.resolve(state);
 
@@ -779,11 +789,17 @@ function createOnlineGalleryRuntime(
     deleteSkippedPath: unchanged,
     deleteAllSkipped: unchanged,
     togglePaused: unchanged,
+    batchSkipPaths: unchanged,
+    batchRestoreSkipped: unchanged,
+    batchFavorite: unchanged,
+    batchDeletePaths: unchanged,
     updateOnlineSource: unchanged,
     runOnlineSource: unchanged,
     runUpx8Category: unchanged,
     setOnlineImageAsWallpaper: unchanged,
     deleteOnlineImage: unchanged,
+    clearExcludedImageUrls: unchanged,
+    removeExcludedImageUrl: unchanged,
     selectOnlineDirectory: unchanged,
     revealOnlineImage: unchanged,
     revealWallpaper: () => Promise.resolve(),
@@ -795,3 +811,225 @@ function createOnlineGalleryRuntime(
     onStateChanged: () => Promise.resolve(() => {}),
   };
 }
+
+describe("ZX Wallpaper unified gallery", () => {
+  const localImage = (folderId: string, name: string, folderEnabled = true, modifiedAt: string | null = null) => ({ path: `D:\\Wallpapers\\${name}`, folderId, folderEnabled, modifiedAt });
+  const onlinePath = (name: string) => `D:\\ZX Wallpaper\\Online\\${name}`;
+
+  it("lists local folders as gallery sources and marks disabled ones", async () => {
+    const user = userEvent.setup();
+    render(<App runtime={createOnlineGalleryRuntime(0, undefined, undefined, undefined, {
+      folders: [
+        { id: "folder-a", path: "D:\\Wallpapers\\Scenic", enabled: true },
+        { id: "folder-b", path: "D:\\Wallpapers\\Archive", enabled: false },
+      ],
+      libraryImages: [localImage("folder-a", "ridge.jpg"), localImage("folder-b", "old.jpg", false)],
+    })} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+
+    const scenicTab = await screen.findByRole("tab", { name: /Scenic/ });
+    expect(scenicTab.textContent).toContain("1");
+    const archiveTab = screen.getByRole("tab", { name: /Archive/ });
+    expect(archiveTab.textContent).toContain("已停用");
+    expect(screen.getByText(/按文件名排列/)).toBeTruthy();
+  });
+
+  it("shows a disabled-folder image with a no-rotation badge and blocks setting it while multiple are selected", async () => {
+    const user = userEvent.setup();
+    render(<App runtime={createOnlineGalleryRuntime(0, undefined, undefined, undefined, {
+      folders: [{ id: "folder-b", path: "D:\\Wallpapers\\Archive", enabled: false }],
+      libraryImages: [localImage("folder-b", "old.jpg", false), localImage("folder-b", "older.jpg", false)],
+    })} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+    expect((await screen.findAllByText("不参与轮转")).length).toBe(2);
+
+    await user.click(screen.getByRole("checkbox", { name: "选择 old.jpg" }));
+    await user.click(screen.getByRole("checkbox", { name: "选择 older.jpg" }));
+    const wallpaperButtons = screen.getAllByRole("button", { name: "设为壁纸" });
+    expect(wallpaperButtons.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  it("sends the selected paths to the batch skip command", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(2);
+    const batchSkipPaths = vi.fn(() => runtime.getState());
+    runtime.batchSkipPaths = batchSkipPaths;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+    await user.click(await screen.findByRole("checkbox", { name: "选择 online-01.jpg" }));
+    await user.click(screen.getByRole("button", { name: "跳过" }));
+
+    expect(batchSkipPaths).toHaveBeenCalledWith([onlinePath("online-01.jpg")]);
+  });
+
+  it("confirms before running the batch delete command and reports the count", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(3);
+    const batchDeletePaths = vi.fn(() => runtime.getState());
+    runtime.batchDeletePaths = batchDeletePaths;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+    await user.click(await screen.findByRole("checkbox", { name: "选择 online-01.jpg" }));
+    await user.click(screen.getByRole("checkbox", { name: "选择 online-02.jpg" }));
+    await user.click(screen.getByRole("button", { name: "删除" }));
+
+    expect(batchDeletePaths).not.toHaveBeenCalled();
+    expect((await screen.findByText("删除 2 张图片")).textContent).toBe("删除 2 张图片");
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog.textContent).toContain("移入系统回收站");
+    await user.click(within(dialog).getByRole("button", { name: "删除" }));
+
+    expect(batchDeletePaths).toHaveBeenCalledWith([onlinePath("online-01.jpg"), onlinePath("online-02.jpg")]);
+    // 删除后选择态必须清空，否则批量栏会显示「已选 N 张」但实际一张都不存在。
+    expect(await screen.findByText("已选 0 张")).toBeTruthy();
+  });
+
+  it("shows the excluded download list and clears it after confirmation", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0, undefined, undefined, undefined, {
+      excludedImageUrls: ["https://example.test/a.jpg", "https://example.test/b.jpg"],
+    });
+    const clearExcludedImageUrls = vi.fn(() => runtime.getState());
+    runtime.clearExcludedImageUrls = clearExcludedImageUrls;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+    expect(await screen.findByText("已排除下载 (2)")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "清空排除记录" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).toContain("2 个已删除图片的源地址");
+    await user.click(within(dialog).getByRole("button", { name: "清空" }));
+
+    expect(clearExcludedImageUrls).toHaveBeenCalled();
+  });
+
+  it("lists the excluded urls and removes a single entry", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0, undefined, undefined, undefined, {
+      excludedImageUrls: ["https://example.test/a.jpg", "https://example.test/b.jpg"],
+    });
+    const removeExcludedImageUrl = vi.fn(() => runtime.getState());
+    runtime.removeExcludedImageUrl = removeExcludedImageUrl;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+    await user.click(await screen.findByText(/查看已排除的 2 个地址/));
+    expect(await screen.findByText("https://example.test/a.jpg")).toBeTruthy();
+    expect(screen.getByText("https://example.test/b.jpg")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "移出排除 https://example.test/a.jpg" }));
+    expect(removeExcludedImageUrl).toHaveBeenCalledWith("https://example.test/a.jpg");
+  });
+
+  it("sorts the gallery by name or by file time", async () => {
+    const user = userEvent.setup();
+    render(<App runtime={createOnlineGalleryRuntime(0, undefined, undefined, undefined, {
+      folders: [{ id: "folder-a", path: "D:\\Wallpapers\\Scenic", enabled: true }],
+      // 名称序与时间序刻意相反：a 最旧、c 最新。
+      libraryImages: [
+        localImage("folder-a", "a-old.jpg", true, "2026-01-01T00:00:00Z"),
+        localImage("folder-a", "b-middle.jpg", true, "2026-06-01T00:00:00Z"),
+        localImage("folder-a", "c-new.jpg", true, "2026-10-01T00:00:00Z"),
+      ],
+    })} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+    const grid = (await screen.findByText("a-old.jpg")).closest(".online-gallery") as HTMLElement;
+    const cardNames = () => Array.from(grid.querySelectorAll<HTMLElement>("[data-gallery-path]"))
+      .map((card) => card.getAttribute("data-gallery-path")?.split("\\").pop() ?? "");
+
+    expect(cardNames()).toEqual(["a-old.jpg", "b-middle.jpg", "c-new.jpg"]);
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "图库排序方式" }), "time");
+    expect(cardNames()).toEqual(["c-new.jpg", "b-middle.jpg", "a-old.jpg"]);
+    expect(screen.getByText(/按更新时间排列/)).toBeTruthy();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "图库排序方式" }), "name");
+    expect(cardNames()).toEqual(["a-old.jpg", "b-middle.jpg", "c-new.jpg"]);
+  });
+
+  it("only renders the current page of a thousand local images", async () => {
+    const user = userEvent.setup();
+    const libraryImages = Array.from({ length: 1000 }, (_, index) => localImage("folder-a", `bulk-${String(index + 1).padStart(4, "0")}.jpg`));
+    render(<App runtime={createOnlineGalleryRuntime(0, undefined, undefined, undefined, {
+      folders: [{ id: "folder-a", path: "D:\\Wallpapers\\Scenic", enabled: true }],
+      libraryImages,
+    })} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+
+    const heading = (await screen.findByRole("heading", { level: 2 })).textContent;
+    expect(heading).toContain("图库");
+    expect(heading).toContain("(1000)");
+    expect(screen.getByText(/第 1 \/ 21 页/)).toBeTruthy();
+    expect(screen.getByRole("checkbox", { name: "选择 bulk-0048.jpg" })).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "选择 bulk-0049.jpg" })).toBeNull();
+  });
+
+  it("selects a gallery image by clicking the card itself", async () => {
+    const user = userEvent.setup();
+    render(<App runtime={createOnlineGalleryRuntime(2)} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+    await user.click((await screen.findByText("online-01.jpg")).closest("article")!);
+
+    expect(screen.getByText("已选 1 张")).toBeTruthy();
+    expect((screen.getByRole("checkbox", { name: "选择 online-01.jpg" }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("keeps a normal card click working after a marquee drag", async () => {
+    const user = userEvent.setup();
+    render(<App runtime={createOnlineGalleryRuntime(4)} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+    const grid = (await screen.findByText("online-01.jpg")).closest(".online-gallery") as HTMLElement;
+    const cards = Array.from(grid.querySelectorAll<HTMLElement>("[data-gallery-path]"));
+    grid.getBoundingClientRect = () => ({ left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    cards.forEach((card, index) => {
+      const left = 10 + index * 100;
+      card.getBoundingClientRect = () => ({ left, top: 10, right: left + 90, bottom: 130, width: 90, height: 120, x: left, y: 10, toJSON: () => ({}) }) as DOMRect;
+    });
+
+    fireEvent.mouseDown(cards[0], { button: 0, clientX: 20, clientY: 20 });
+    fireEvent.mouseMove(window, { clientX: 120, clientY: 60 });
+    fireEvent.mouseUp(cards[0], { button: 0, clientX: 120, clientY: 60 });
+    await waitFor(() => expect(screen.getByText("已选 2 张")).toBeTruthy());
+
+    // 框选结束后的一次普通点击必须照常切换选中，不能被拖拽的余波吞掉。
+    fireEvent.click(cards[3], { clientX: 320, clientY: 20 });
+    await waitFor(() => expect(screen.getByText("已选 3 张")).toBeTruthy());
+    expect((screen.getByRole("checkbox", { name: "选择 online-04.jpg" }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("selects every image inside a dragged marquee rectangle", async () => {
+    const user = userEvent.setup();
+    render(<App runtime={createOnlineGalleryRuntime(6)} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+    const grid = (await screen.findByText("online-01.jpg")).closest(".online-gallery") as HTMLElement;
+    const cards = Array.from(grid.querySelectorAll<HTMLElement>("[data-gallery-path]"));
+    expect(cards.length).toBe(6);
+
+    // jsdom 没有真实布局，手动给出网格与卡片的矩形，框选才能算出相交集合。
+    grid.getBoundingClientRect = () => ({ left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    cards.forEach((card, index) => {
+      const left = 10 + index * 100;
+      card.getBoundingClientRect = () => ({ left, top: 10, right: left + 90, bottom: 130, width: 90, height: 120, x: left, y: 10, toJSON: () => ({}) }) as DOMRect;
+    });
+
+    fireEvent.mouseDown(grid, { button: 0, clientX: 2, clientY: 2 });
+    fireEvent.mouseMove(window, { clientX: 104, clientY: 18 });
+    fireEvent.mouseMove(window, { clientX: 304, clientY: 126 });
+    fireEvent.mouseUp(window, { button: 0, clientX: 304, clientY: 126 });
+
+    await waitFor(() => expect(screen.getByText("已选 3 张")).toBeTruthy());
+    expect((screen.getByRole("checkbox", { name: "选择 online-01.jpg" }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole("checkbox", { name: "选择 online-03.jpg" }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole("checkbox", { name: "选择 online-04.jpg" }) as HTMLInputElement).checked).toBe(false);
+  });
+});

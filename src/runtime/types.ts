@@ -26,6 +26,15 @@ export interface FolderStatus {
   scannedAt: string;
 }
 
+/** 一张本地图在图库中的归属信息（由后端扫描派生，不落盘）。 */
+export interface LibraryImage {
+  path: string;
+  folderId: string;
+  folderEnabled: boolean;
+  /** 文件修改时间（RFC3339）。图库「按时间排序」用它；读不到时为 null。 */
+  modifiedAt: string | null;
+}
+
 export interface OnlineSourceCategoryStatus {
   key: string;
   label: string;
@@ -148,6 +157,8 @@ export interface AppConfig {
   lastSwitchAt: string | null;
   onlineSources: OnlineSource[];
   onlineImages: OnlineImage[];
+  /** 被用户删除过的在线图源 URL（黑名单）：同步时永久跳过。 */
+  excludedImageUrls: string[];
   onlineSyncLogs: OnlineSyncLog[];
   onlineDirectory: string | null;
   onlineStorageLimitGb: 1 | 5 | 10 | 20;
@@ -162,6 +173,7 @@ export interface AppState extends AppConfig {
   previewUrl: string | null;
   previewItems: PreviewItem[];
   folderStatuses: Record<string, FolderStatus>;
+  libraryImages: LibraryImage[];
   onlineStorageBytes: number;
   globalShortcutRegistered: boolean;
   shortcutStatus: ShortcutStatus;
@@ -186,12 +198,18 @@ export interface DesktopRuntime {
   restoreAllSkipped(): Promise<AppState>;
   deleteSkippedPath(filePath: string): Promise<AppState>;
   deleteAllSkipped(): Promise<AppState>;
+  batchSkipPaths(paths: string[]): Promise<AppState>;
+  batchRestoreSkipped(paths: string[]): Promise<AppState>;
+  batchFavorite(paths: string[], favorite: boolean): Promise<AppState>;
+  batchDeletePaths(paths: string[]): Promise<AppState>;
   togglePaused(): Promise<AppState>;
   updateOnlineSource(source: OnlineSource): Promise<AppState>;
   runOnlineSource(sourceId: string): Promise<AppState>;
   runUpx8Category(categoryKey: string): Promise<AppState>;
   setOnlineImageAsWallpaper(imageId: string): Promise<AppState>;
   deleteOnlineImage(imageId: string): Promise<AppState>;
+  clearExcludedImageUrls(): Promise<AppState>;
+  removeExcludedImageUrl(url: string): Promise<AppState>;
   selectOnlineDirectory(): Promise<AppState>;
   revealOnlineImage(imageId: string): Promise<AppState>;
   revealWallpaper(filePath: string): Promise<void>;

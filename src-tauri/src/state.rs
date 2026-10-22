@@ -30,6 +30,20 @@ const PREVIEW_STRIP_SIZE: usize = 5;
 pub(crate) struct LibraryScan {
     pub(crate) folder_statuses: HashMap<String, FolderStatus>,
     pub(crate) candidates: Vec<String>,
+    /// 全部壁纸目录（含已停用）内的受支持图片及其目录归属，供统一图库浏览。
+    /// 与 `candidates` 不同：停用目录的图片也会出现在这里，但不参与随机循环。
+    pub(crate) library_images: Vec<LibraryImage>,
+}
+
+/// 一张本地图在图库中的归属信息。图片身份即绝对路径（见 CONTEXT.md「图片身份」）。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryImage {
+    pub path: String,
+    pub folder_id: String,
+    pub folder_enabled: bool,
+    /// 文件修改时间（RFC3339）。图库按时间排序依赖它；读不到时为 None，前端排到最后。
+    pub modified_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -172,6 +186,10 @@ pub struct AppConfig {
     pub online_sources: Vec<OnlineSource>,
     #[serde(default)]
     pub online_images: Vec<OnlineImage>,
+    /// 被用户删除过的在线图源 URL（黑名单）：同步时永久跳过，避免「删了又被下回来」。
+    /// 只有通过应用内删除才会写入；手动在资源管理器删文件不会拉黑。
+    #[serde(default)]
+    pub excluded_image_urls: Vec<String>,
     #[serde(default)]
     pub online_sync_logs: Vec<OnlineSyncLog>,
     #[serde(default)]
@@ -209,6 +227,7 @@ impl Default for AppConfig {
             last_switch_at: None,
             online_sources: built_in_sources(),
             online_images: Vec::new(),
+            excluded_image_urls: Vec::new(),
             online_sync_logs: Vec::new(),
             online_directory: None,
             online_storage_limit_gb: default_storage_limit(),
@@ -238,6 +257,7 @@ pub struct AppState {
     preview_url: Option<String>,
     preview_items: Vec<PreviewItem>,
     folder_statuses: HashMap<String, FolderStatus>,
+    library_images: Vec<LibraryImage>,
     online_storage_bytes: u64,
     global_shortcut_registered: bool,
     shortcut_status: ShortcutStatus,
@@ -585,6 +605,7 @@ pub(crate) fn build_state_from_scan(
         preview_url: None,
         preview_items,
         folder_statuses: scan.folder_statuses,
+        library_images: scan.library_images,
         online_storage_bytes,
         global_shortcut_registered: matches!(shortcut_status, ShortcutStatus::Active { .. }),
         shortcut_status,
@@ -674,6 +695,42 @@ mod tests {
                     .unwrap_or(false)
             })
             .collect()
+    }
+
+    /// 千张级派生字段体积与耗时测量（design.md 的 AppState 膨胀风险项）。
+    /// 超400KB 或超 30ms 就说明该退化为按需命令 `list_library_images`。
+    #[test]
+    fn app_state_stays_within_the_thousand_image_budget() {
+        let library_images: Vec<LibraryImage> = (0..1000)
+            .map(|index| LibraryImage {
+                path: format!("D:\\ZX Wallpaper\\Scenic\\wallpaper-{index:04}.jpg"),
+                folder_id: "scenic".to_string(),
+                folder_enabled: true,
+                modified_at: Some("2026-10-21T12:00:00Z".to_string()),
+            })
+            .collect();
+        let candidates: Vec<String> = library_images.iter().map(|image| image.path.clone()).collect();
+        let config = AppConfig {
+            folders: vec![WallpaperFolder { id: "scenic".to_string(), path: "D:\\ZX Wallpaper\\Scenic".to_string(), enabled: true }],
+            ..AppConfig::default()
+        };
+        let scan = LibraryScan {
+            folder_statuses: HashMap::from([(
+                "scenic".to_string(),
+                FolderStatus { kind: "available", available_count: 1000, invalid_count: 0, scanned_at: "2026-10-21T00:00:00Z".to_string() },
+            )]),
+            candidates,
+            library_images,
+        };
+
+        let started = Instant::now();
+        let state = build_state_from_scan(config, scan, ShortcutStatus::Disabled, ShortcutStatus::Disabled);
+        let elapsed = started.elapsed();
+        let json = serde_json::to_string(&state).expect("app state should serialize");
+
+        println!("thousand-image AppState: {} KB, build {:?}", json.len() / 1024, elapsed);
+        assert!(json.len() < 400 * 1024, "AppState JSON grew to {} KB", json.len() / 1024);
+        assert!(elapsed.as_millis() < 30, "building AppState took {elapsed:?}");
     }
 
     #[test]

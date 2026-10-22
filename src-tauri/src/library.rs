@@ -6,6 +6,8 @@ use std::thread;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -15,8 +17,8 @@ use crate::online::{now_rfc3339, prune_missing_online_images};
 use crate::preferences::refresh_rotation_queue;
 use crate::state::{
     build_state, build_state_from_scan, commit_scanned_state, get_state, lock_config,
-    lock_library_scan, mutate, shortcut_statuses, AppState, AppConfig, FolderStatus, LibraryScan,
-    RuntimeState, WallpaperFolder,
+    lock_library_scan, mutate, shortcut_statuses, AppState, AppConfig, FolderStatus, LibraryImage,
+    LibraryScan, RuntimeState, WallpaperFolder,
 };
 
 pub fn request_initial_scan(app: &AppHandle, state: &RuntimeState) {
@@ -195,7 +197,7 @@ pub(crate) fn refresh_rotation_queue_for_config(config: &mut AppConfig, candidat
 }
 
 pub(crate) fn collect_candidates(config: &AppConfig) -> LibraryScan {
-    let (folder_statuses, local_paths) = inspect_folders(&config.folders);
+    let (folder_statuses, local_paths, library_images) = inspect_folders(&config.folders);
     let online_paths = config
         .online_images
         .iter()
@@ -205,6 +207,7 @@ pub(crate) fn collect_candidates(config: &AppConfig) -> LibraryScan {
     LibraryScan {
         folder_statuses,
         candidates: merge_candidate_paths(local_paths, online_paths),
+        library_images,
     }
 }
 
@@ -242,6 +245,8 @@ pub(crate) fn initial_scan(config: &AppConfig) -> LibraryScan {
     LibraryScan {
         folder_statuses,
         candidates: online_paths,
+        // 首扫不枚举本地目录（与既有行为一致），图库在首次完整扫描后才可见本地图。
+        library_images: Vec::new(),
     }
 }
 
@@ -262,14 +267,25 @@ fn open_folder_path<'a>(config: &'a AppConfig, folder_id: &str) -> Option<&'a st
         .map(|folder| folder.path.as_str())
 }
 
-fn inspect_folders(folders: &[WallpaperFolder]) -> (HashMap<String, FolderStatus>, Vec<String>) {
+fn inspect_folders(
+    folders: &[WallpaperFolder],
+) -> (
+    HashMap<String, FolderStatus>,
+    Vec<String>,
+    Vec<LibraryImage>,
+) {
     let mut statuses = HashMap::new();
     let mut seen = HashSet::new();
     let mut candidates = Vec::new();
+    let mut library_seen = HashSet::new();
+    let mut library_images = Vec::new();
 
     for folder in folders {
         let path = Path::new(&folder.path);
         let scanned_at = now_rfc3339();
+        // 图库的「按时间排序」需要文件修改时间；这里顺带用 WalkDir 已读到的元数据，
+        // 不再额外 stat（千张目录多一次 stat 就是千次系统调用）。
+        let mut modified_at_by_path: HashMap<String, String> = HashMap::new();
         let (status, paths) = if !path.is_dir() {
             (
                 FolderStatus {
@@ -289,7 +305,18 @@ fn inspect_folders(folders: &[WallpaperFolder]) -> (HashMap<String, FolderStatus
                 .filter(|entry| entry.file_type().is_file() && is_supported_wallpaper(entry.path()))
                 .filter_map(|entry| {
                     if image::image_dimensions(entry.path()).is_ok() {
-                        Some(entry.path().to_string_lossy().into_owned())
+                        let resolved = entry.path().to_string_lossy().into_owned();
+                        if let Some(stamp) = entry
+                            .metadata()
+                            .ok()
+                            .and_then(|metadata| metadata.modified().ok())
+                            .and_then(|modified| {
+                                OffsetDateTime::from(modified).format(&Rfc3339).ok()
+                            })
+                        {
+                            modified_at_by_path.insert(resolved.to_ascii_lowercase(), stamp);
+                        }
+                        Some(resolved)
                     } else {
                         invalid_count += 1;
                         None
@@ -313,6 +340,20 @@ fn inspect_folders(folders: &[WallpaperFolder]) -> (HashMap<String, FolderStatus
             )
         };
 
+        // 图库归属：停用目录的图片也可见，但只归属到首个出现的目录。
+        for path in &paths {
+            if library_seen.insert(path.to_ascii_lowercase()) {
+                library_images.push(LibraryImage {
+                    path: path.clone(),
+                    folder_id: folder.id.clone(),
+                    folder_enabled: folder.enabled,
+                    modified_at: modified_at_by_path
+                        .get(&path.to_ascii_lowercase())
+                        .cloned(),
+                });
+            }
+        }
+
         if folder.enabled {
             for candidate in paths {
                 if seen.insert(candidate.to_ascii_lowercase()) {
@@ -323,7 +364,7 @@ fn inspect_folders(folders: &[WallpaperFolder]) -> (HashMap<String, FolderStatus
         statuses.insert(folder.id.clone(), status);
     }
 
-    (statuses, candidates)
+    (statuses, candidates, library_images)
 }
 
 #[cfg(test)]
@@ -351,7 +392,7 @@ mod tests {
             enabled: true,
         };
 
-        let (statuses, candidates) = inspect_folders(&[folder]);
+        let (statuses, candidates, library_images) = inspect_folders(&[folder]);
         let status = statuses.get("test-folder").unwrap();
 
         assert_eq!(status.kind, "available");
@@ -359,7 +400,98 @@ mod tests {
         assert_eq!(status.invalid_count, 1);
         assert!(!status.scanned_at.is_empty());
         assert_eq!(candidates, vec![valid_path.to_string_lossy().into_owned()]);
+        assert_eq!(library_images.len(), 1);
+        assert_eq!(library_images[0].path, valid_path.to_string_lossy());
+        assert_eq!(library_images[0].folder_id, "test-folder");
+        assert!(library_images[0].folder_enabled);
+        // 图库按时间排序依赖它，扫描时必须带出文件修改时间。
+        assert!(
+            library_images[0]
+                .modified_at
+                .as_deref()
+                .is_some_and(|stamp| !stamp.is_empty()),
+            "scan should record the file modification time"
+        );
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn library_images_cover_disabled_folders_while_candidates_only_keep_enabled_ones() {
+        let enabled_dir =
+            std::env::temp_dir().join(format!("zx-wallpaper-enabled-{}", Uuid::new_v4()));
+        let disabled_dir =
+            std::env::temp_dir().join(format!("zx-wallpaper-disabled-{}", Uuid::new_v4()));
+        fs::create_dir_all(&enabled_dir).unwrap();
+        fs::create_dir_all(&disabled_dir).unwrap();
+        let enabled_path = enabled_dir.join("enabled.png");
+        let disabled_path = disabled_dir.join("disabled.png");
+        for path in [&enabled_path, &disabled_path] {
+            image::RgbImage::from_pixel(10, 10, image::Rgb([32, 64, 128]))
+                .save_with_format(path, image::ImageFormat::Png)
+                .unwrap();
+        }
+
+        let folders = vec![
+            WallpaperFolder {
+                id: "enabled-folder".into(),
+                path: enabled_dir.to_string_lossy().into_owned(),
+                enabled: true,
+            },
+            WallpaperFolder {
+                id: "disabled-folder".into(),
+                path: disabled_dir.to_string_lossy().into_owned(),
+                enabled: false,
+            },
+        ];
+
+        let (statuses, candidates, library_images) = inspect_folders(&folders);
+
+        assert_eq!(candidates, vec![enabled_path.to_string_lossy().into_owned()]);
+        assert_eq!(statuses.get("disabled-folder").unwrap().available_count, 1);
+        assert_eq!(library_images.len(), 2);
+        let disabled = library_images
+            .iter()
+            .find(|image| image.folder_id == "disabled-folder")
+            .unwrap();
+        assert_eq!(disabled.path, disabled_path.to_string_lossy());
+        assert!(!disabled.folder_enabled);
+
+        let _ = fs::remove_dir_all(enabled_dir);
+        let _ = fs::remove_dir_all(disabled_dir);
+    }
+
+    #[test]
+    fn library_images_keep_the_first_folder_ownership_for_a_duplicated_path() {
+        let first_dir = std::env::temp_dir().join(format!("zx-wallpaper-first-{}", Uuid::new_v4()));
+        // 第二个目录是第一个目录的子目录：递归扫描会让同一张图落在两个目录之下。
+        let second_dir = first_dir.join("nested");
+        fs::create_dir_all(&second_dir).unwrap();
+        let shared_path = first_dir.join("shared.png");
+        image::RgbImage::from_pixel(10, 10, image::Rgb([32, 64, 128]))
+            .save_with_format(&shared_path, image::ImageFormat::Png)
+            .unwrap();
+
+        let folders = vec![
+            WallpaperFolder {
+                id: "first-folder".into(),
+                path: first_dir.to_string_lossy().into_owned(),
+                enabled: true,
+            },
+            WallpaperFolder {
+                id: "second-folder".into(),
+                path: second_dir.to_string_lossy().into_owned(),
+                enabled: true,
+            },
+        ];
+
+        let (_, candidates, library_images) = inspect_folders(&folders);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(library_images.len(), 1);
+        assert_eq!(library_images[0].folder_id, "first-folder");
+        assert_eq!(library_images[0].path, shared_path.to_string_lossy());
+
+        let _ = fs::remove_dir_all(first_dir);
     }
 
     #[test]

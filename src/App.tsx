@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
-import { pathName, samePath } from "./shared/paths";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import { pathKey, pathName, samePath } from "./shared/paths";
 import {
   Archive,
   ChevronRight,
   CircleAlert,
   CloudDownload,
   FolderOpen,
-  Globe2,
   Heart,
   Image as ImageIcon,
+  Images,
   Keyboard,
   LayoutDashboard,
   LoaderCircle,
@@ -49,15 +49,8 @@ import { tauriRuntime } from "./runtime/tauri-runtime";
 const previewImage =
   "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1600&q=85";
 
-const intervalOptions = [
-  { value: 5, label: "5 分钟" },
-  { value: 10, label: "10 分钟" },
-  { value: 15, label: "15 分钟" },
-  { value: 30, label: "30 分钟" },
-  { value: 60, label: "1 小时" },
-  { value: 180, label: "3 小时" },
-  { value: 1440, label: "每天" },
-];
+/** 切换间隔的手动输入范围（分钟）：与后端 `update_preferences` 的钳制保持一致。 */
+const INTERVAL_MINUTES = { min: 1, max: 43_200 } as const;
 
 const displayModes: Array<{ value: WallpaperMode; label: string }> = [
   { value: "fill", label: "填充" },
@@ -81,9 +74,14 @@ const upx8Categories = [
   { key: "girl", label: "美女" },
   { key: "sport", label: "运动" },
 ] as const;
-const ONLINE_PAGE_SIZE = 24;
+const GALLERY_PAGE_SIZE = 48;
 export const SUCCESS_STATUS_DURATION_MS = 3_000;
-type View = "workbench" | "online" | "favorites" | "lab" | "settings";
+type View = "workbench" | "gallery" | "favorites" | "lab" | "settings";
+
+/** 图库条目：在线下载图与本地目录图字段不对等，用判别联合表达，不用假数据补齐。 */
+type GalleryItem =
+  | { kind: "online"; path: string; online: OnlineImage }
+  | { kind: "local"; path: string; folderId: string; folderEnabled: boolean; modifiedAt: string | null };
 
 type ConfirmOptions = {
   title: string;
@@ -100,7 +98,7 @@ const navigation: Array<{
   icon: typeof LayoutDashboard;
 }> = [
   { key: "workbench", label: "工作台", subtitle: "本地壁纸与切换", icon: LayoutDashboard },
-  { key: "online", label: "在线发现", subtitle: "来源与下载管理", icon: Globe2 },
+  { key: "gallery", label: "图库", subtitle: "浏览与治理", icon: Images },
   { key: "favorites", label: "我的喜欢", subtitle: "保留的壁纸", icon: Heart },
   { key: "lab", label: "实验室", subtitle: "后置实验性功能", icon: WandSparkles },
   { key: "settings", label: "设置", subtitle: "偏好与系统集成", icon: Settings },
@@ -110,6 +108,8 @@ export default function App({ runtime }: { runtime?: DesktopRuntime }) {
   const [api] = useState(() => runtime ?? createDefaultRuntime());
   const [state, setState] = useState<AppState | null>(null);
   const [view, setView] = useState<View>("workbench");
+  /** 图库来源由 App 持有，这样工作台的「查看 N 张」能直接跳到对应目录 tab。 */
+  const [gallerySource, setGallerySource] = useState(ALL_GALLERY_SOURCE);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -202,6 +202,8 @@ export default function App({ runtime }: { runtime?: DesktopRuntime }) {
     [api, run],
   );
   const openViewer = useCallback((filePath: string) => setViewerPath(filePath), []);
+  /** 跳到图库并定位到指定本地目录来源。 */
+  const openGallery = useCallback((folderId: string) => { setGallerySource(folderId); setView("gallery"); }, []);
   const openConfirm = useCallback((options: ConfirmOptions) => setConfirmOptions(options), []);
   const closeConfirm = useCallback(() => setConfirmOptions(null), []);
   const confirmAction = useCallback(async () => {
@@ -214,8 +216,8 @@ export default function App({ runtime }: { runtime?: DesktopRuntime }) {
 
   const activeNavigation = navigation.find((item) => item.key === view)!;
   const content = {
-    workbench: <WorkbenchView api={api} state={state} busy={busy} run={run} updateConfig={updateConfig} onOpenViewer={openViewer} openConfirm={openConfirm} />,
-    online: <OnlineView api={api} state={state} busy={busy} run={run} updateConfig={updateConfig} onOpenViewer={openViewer} openConfirm={openConfirm} />,
+    workbench: <WorkbenchView api={api} state={state} busy={busy} run={run} updateConfig={updateConfig} onOpenViewer={openViewer} openConfirm={openConfirm} onOpenGallery={openGallery} />,
+    gallery: <GalleryView api={api} state={state} busy={busy} run={run} updateConfig={updateConfig} onOpenViewer={openViewer} openConfirm={openConfirm} source={gallerySource} onSourceChange={setGallerySource} />,
     favorites: <FavoritesView api={api} state={state} busy={busy} run={run} onOpenViewer={openViewer} />,
     lab: <LabView />,
     settings: <SettingsView state={state} api={api} busy={busy} run={run} updateConfig={updateConfig} />,
@@ -306,6 +308,7 @@ function WorkbenchView({
   updateConfig,
   onOpenViewer,
   openConfirm,
+  onOpenGallery,
 }: {
   api: DesktopRuntime;
   state: AppState;
@@ -314,6 +317,7 @@ function WorkbenchView({
   updateConfig: (patch: Partial<AppConfig>) => void;
   onOpenViewer: (filePath: string) => void;
   openConfirm: (options: ConfirmOptions) => void;
+  onOpenGallery: (folderId: string) => void;
 }) {
   const [skippedFilter, setSkippedFilter] = useState("");
   const folders = state.folders.filter((folder) => folder.id !== "online-library");
@@ -427,7 +431,7 @@ function WorkbenchView({
         <SectionHeading title="壁纸目录" action={<button className="action-button is-primary is-small" type="button" disabled={busy === "folder"} onClick={() => void run("folder", () => api.addFolder())}><Plus size={14} /> 添加目录</button>} />
         <div className="folder-table">
           {folders.length === 0 ? <EmptyState text="尚未添加壁纸目录" /> : folders.map((folder) => (
-            <FolderRow key={folder.id} folder={folder} status={state.folderStatuses[folder.id]} busy={busy} api={api} run={run} />
+            <FolderRow key={folder.id} folder={folder} status={state.folderStatuses[folder.id]} libraryCount={state.libraryImages.filter((image) => image.folderId === folder.id).length} busy={busy} api={api} run={run} onOpenGallery={onOpenGallery} />
           ))}
         </div>
       </section>
@@ -474,7 +478,7 @@ function CurrentPreview({ path, previewUrl, api }: { path: string; previewUrl: s
   return <img className="hero-image hero-image-current" key={path || thumbnail} src={thumbnail} alt="当前壁纸预览" decoding="async" />;
 }
 
-function FolderRow({ folder, status, busy, api, run }: { folder: WallpaperFolder; status: AppState["folderStatuses"][string] | undefined; busy: string | null; api: DesktopRuntime; run: (key: string, action: () => Promise<unknown>) => Promise<void> }) {
+function FolderRow({ folder, status, libraryCount, busy, api, run, onOpenGallery }: { folder: WallpaperFolder; status: AppState["folderStatuses"][string] | undefined; libraryCount: number; busy: string | null; api: DesktopRuntime; run: (key: string, action: () => Promise<unknown>) => Promise<void>; onOpenGallery: (folderId: string) => void }) {
   const label = status?.kind === "unavailable" ? "不可访问" : status?.kind === "empty" ? "无图片" : status?.invalidCount ? `${status.invalidCount} 无效` : "正常";
   const tone = status?.kind === "unavailable" ? "red" : status?.kind === "empty" || status?.invalidCount ? "amber" : "green";
   return <div className="folder-row">
@@ -484,6 +488,7 @@ function FolderRow({ folder, status, busy, api, run }: { folder: WallpaperFolder
     <span className="folder-count">{status?.kind === "available" ? status.availableCount : "—"}</span>
     <Tag tone={tone}>{label}</Tag>
     <div className="row-actions">
+      <button type="button" aria-label={`在图库中查看 ${folder.path} 的 ${libraryCount} 张图片`} title="在图库中查看" disabled={libraryCount === 0} onClick={() => onOpenGallery(folder.id)}><Images size={14} /></button>
       <button type="button" aria-label={`重新扫描 ${folder.path}`} disabled={busy === `scan-${folder.id}`} onClick={() => void run(`scan-${folder.id}`, () => api.rescanFolders())}><RefreshCw size={14} /></button>
       <button type="button" aria-label={`打开 ${folder.path}`} onClick={() => void run(`open-${folder.id}`, () => api.openFolder(folder.id))}><FolderOpen size={14} /></button>
       <button type="button" aria-label={`移除 ${folder.path}`} className="danger" onClick={() => void run(`remove-${folder.id}`, () => api.removeFolder(folder.id))}><Trash2 size={14} /></button>
@@ -545,86 +550,299 @@ function FavoriteCard({ path, onlineImage, api, busy, run, onOpenViewer }: { pat
   </article>;
 }
 
-function OnlineView({ api, state, busy, run, updateConfig, onOpenViewer, openConfirm }: { api: DesktopRuntime; state: AppState; busy: string | null; run: (key: string, action: () => Promise<unknown>) => Promise<void>; updateConfig: (patch: Partial<AppConfig>) => void; onOpenViewer: (filePath: string) => void; openConfirm: (options: ConfirmOptions) => void }) {
-  const [sourceFilter, setSourceFilter] = useState("all");
+/** 图库排序方式。时间口径：在线图用下载时间，本地图用文件修改时间（扫描时带出）。 */
+type GallerySort = "name" | "time";
+const gallerySortOptions: { value: GallerySort; label: string }[] = [
+  { value: "name", label: "按名称" },
+  { value: "time", label: "按时间（新→旧）" },
+];
+
+function galleryTimestamp(item: GalleryItem): number | null {
+  const raw = item.kind === "online" ? item.online.downloadedAt : item.modifiedAt;
+  if (!raw) return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function compareGalleryItems(left: GalleryItem, right: GalleryItem, sort: GallerySort): number {
+  if (sort === "time") {
+    const leftTime = galleryTimestamp(left);
+    const rightTime = galleryTimestamp(right);
+    if (leftTime !== null && rightTime !== null && leftTime !== rightTime) return rightTime - leftTime;
+    // 拿不到时间的（元数据读取失败）沉到最后，别插在有效时间中间。
+    if (leftTime === null && rightTime !== null) return 1;
+    if (leftTime !== null && rightTime === null) return -1;
+  }
+  return left.path.localeCompare(right.path);
+}
+
+const ALL_GALLERY_SOURCE = "all";
+const ONLINE_GALLERY_SOURCE = "online";
+
+function GalleryView({ api, state, busy, run, updateConfig, onOpenViewer, openConfirm, source, onSourceChange }: { api: DesktopRuntime; state: AppState; busy: string | null; run: (key: string, action: () => Promise<unknown>) => Promise<void>; updateConfig: (patch: Partial<AppConfig>) => void; onOpenViewer: (filePath: string) => void; openConfirm: (options: ConfirmOptions) => void; source: string; onSourceChange: (source: string) => void }) {
   const [galleryFilter, setGalleryFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
-  const [visibleCount, setVisibleCount] = useState(ONLINE_PAGE_SIZE);
+  const [sort, setSort] = useState<GallerySort>("name");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(GALLERY_PAGE_SIZE);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(() => new Set());
   const [selectedLogId, setSelectedLogId] = useState<string | null>(null);
-  const loadMoreRef = useRef<HTMLDivElement>(null);
-  const prewarmedImagePaths = useRef(new Set<string>());
+  const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [marqueeActive, setMarqueeActive] = useState(false);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const marqueeStartRef = useRef<{ x: number; y: number; clientX: number; clientY: number; additive: boolean; cardPath: string | null } | null>(null);
+  const marqueeRectRef = useRef<{ left: number; top: number; width: number; height: number } | null>(null);
+  const marqueeMovedRef = useRef(false);
+  /** 最近一次卡片按下的坐标：用来区分「真点击」和「框选结束后浏览器补发的那次 click」。 */
+  const pointerDownRef = useRef<{ path: string; x: number; y: number } | null>(null);  const prewarmedImagePaths = useRef(new Set<string>());
   const galleryKeyword = galleryFilter.trim().toLowerCase();
-  const tagByPath = new Map(state.imageTags.map((tag) => [tag.path.toLowerCase(), tag.category]));
-  const images = (sourceFilter === "all" ? state.onlineImages : state.onlineImages.filter((image) => image.sourceId === sourceFilter))
-    .filter((image) => !galleryKeyword || image.localPath.toLowerCase().includes(galleryKeyword))
-    .filter((image) => matchesCategoryFilter(image.localPath, tagByPath, categoryFilter));
-  const visibleImages = images.slice(0, visibleCount);
+  const tagByPath = useMemo(() => new Map(state.imageTags.map((tag) => [pathKey(tag.path), tag.category])), [state.imageTags]);
+  const folderById = useMemo(() => new Map(state.folders.map((folder) => [folder.id, folder])), [state.folders]);
+  const skippedKeys = useMemo(() => new Set(state.skippedPaths.map(pathKey)), [state.skippedPaths]);
+  const favoriteKeys = useMemo(() => new Set(state.favoritePaths.map(pathKey)), [state.favoritePaths]);
+  const currentKey = state.currentPath ? pathKey(state.currentPath) : null;
+
+  /** 在线图与本地图合并去重后按当前排序方式排列；与轮转顺序无关，UI 上有标注。 */
+  const items = useMemo(() => {
+    const deduped = new Map<string, GalleryItem>();
+    for (const image of state.onlineImages) deduped.set(pathKey(image.localPath), { kind: "online", path: image.localPath, online: image });
+    for (const image of state.libraryImages) {
+      const key = pathKey(image.path);
+      if (deduped.has(key)) continue;
+      deduped.set(key, { kind: "local", path: image.path, folderId: image.folderId, folderEnabled: image.folderEnabled, modifiedAt: image.modifiedAt });
+    }
+    return [...deduped.values()].sort((left, right) => compareGalleryItems(left, right, sort));
+  }, [state.onlineImages, state.libraryImages, sort]);
+
+  const sourceTabs = useMemo(() => [
+    { id: ALL_GALLERY_SOURCE, label: "全部", count: items.length, enabled: true },
+    { id: ONLINE_GALLERY_SOURCE, label: "在线下载", count: state.onlineImages.length, enabled: true },
+    // 受管在线目录由 config.online_directory 单独管理，不是用户目录，不作为来源 tab。
+    ...state.folders.filter((folder) => folder.id !== "online-library").map((folder) => ({
+      id: folder.id,
+      label: pathName(folder.path),
+      count: items.filter((item) => item.kind === "local" && item.folderId === folder.id).length,
+      enabled: folder.enabled,
+    })),
+  ], [items, state.folders, state.onlineImages.length]);
+
+  const images = items
+    .filter((item) => source === ALL_GALLERY_SOURCE ? true : source === ONLINE_GALLERY_SOURCE ? item.kind === "online" : item.kind === "local" && item.folderId === source)
+    .filter((item) => !galleryKeyword || item.path.toLowerCase().includes(galleryKeyword))
+    .filter((item) => matchesCategoryFilter(item.path, tagByPath, categoryFilter));
+
+  const totalPages = Math.max(1, Math.ceil(images.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pageItems = images.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const pathByKey = useMemo(() => new Map(items.map((item) => [pathKey(item.path), item.path])), [items]);
+  const selectedPathList = useMemo(() => [...selectedPaths].map((key) => pathByKey.get(key)).filter((path): path is string => path !== undefined), [selectedPaths, pathByKey]);
+  const pageSelectedCount = pageItems.filter((item) => selectedPaths.has(pathKey(item.path))).length;
+  const everySelectedSkipped = selectedPathList.length > 0 && selectedPathList.every((path) => skippedKeys.has(pathKey(path)));
+  const everySelectedFavorite = selectedPathList.length > 0 && selectedPathList.every((path) => favoriteKeys.has(pathKey(path)));
+  const multiSelected = selectedPaths.size > 1;
   const selectedLog = state.onlineSyncLogs.find((log) => log.id === selectedLogId) ?? null;
+
+  const clearSelection = () => setSelectedPaths(new Set());
+  const toggleSelected = (path: string) => {
+    const key = pathKey(path);
+    setSelectedPaths((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+  const selectPage = () => setSelectedPaths((current) => { const next = new Set(current); pageItems.forEach((item) => next.add(pathKey(item.path))); return next; });
+  const unselectPage = () => setSelectedPaths((current) => { const next = new Set(current); pageItems.forEach((item) => next.delete(pathKey(item.path))); return next; });
+  const selectAllFiltered = () => setSelectedPaths(new Set(images.map((item) => pathKey(item.path))));
+  const invertPage = () => setSelectedPaths((current) => {
+    const next = new Set(current);
+    pageItems.forEach((item) => { const key = pathKey(item.path); if (next.has(key)) next.delete(key); else next.add(key); });
+    return next;
+  });
+
+  useEffect(() => { clearSelection(); }, [source, galleryFilter, categoryFilter]);
+  useEffect(() => { setPage(1); }, [source, galleryFilter, categoryFilter, pageSize, sort]);
   useEffect(() => {
     setSelectedLogId((current) => current && state.onlineSyncLogs.some((log) => log.id === current) ? current : null);
   }, [state.onlineSyncLogs]);
+
+  /** 框选：按住左键在网格里拖出一个矩形，松手时把与矩形相交的卡片纳入选择。 */
   useEffect(() => {
-    const loadMore = loadMoreRef.current;
-    if (!loadMore || visibleCount >= images.length) return;
-    if (typeof IntersectionObserver === "undefined") {
-      setVisibleCount((count) => Math.min(count + ONLINE_PAGE_SIZE, images.length));
-      return;
-    }
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) {
-        setVisibleCount((count) => Math.min(count + ONLINE_PAGE_SIZE, images.length));
+    if (!marqueeActive) return;
+    const onMove = (event: MouseEvent) => {
+      const container = gridRef.current;
+      const start = marqueeStartRef.current;
+      if (!container || !start) return;
+      const bounds = container.getBoundingClientRect();
+      const x = event.clientX - bounds.left;
+      const y = event.clientY - bounds.top;
+      if (!marqueeMovedRef.current && Math.abs(x - start.x) + Math.abs(y - start.y) < 4) return;
+      marqueeMovedRef.current = true;
+      const rect = { left: Math.min(start.x, x), top: Math.min(start.y, y), width: Math.abs(x - start.x), height: Math.abs(y - start.y) };
+      marqueeRectRef.current = rect;
+      setMarquee(rect);
+    };
+    const onUp = (event: MouseEvent) => {
+      const container = gridRef.current;
+      const start = marqueeStartRef.current;
+      const rect = marqueeRectRef.current;
+      if (container && start && rect && marqueeMovedRef.current) {
+        const bounds = container.getBoundingClientRect();
+        const region = { left: bounds.left + rect.left, top: bounds.top + rect.top, right: bounds.left + rect.left + rect.width, bottom: bounds.top + rect.top + rect.height };
+        const hit: string[] = [];
+        container.querySelectorAll<HTMLElement>("[data-gallery-path]").forEach((card) => {
+          const cardBounds = card.getBoundingClientRect();
+          if (cardBounds.left < region.right && cardBounds.right > region.left && cardBounds.top < region.bottom && cardBounds.bottom > region.top) {
+            const path = card.dataset.galleryPath;
+            if (path) hit.push(path);
+          }
+        });
+        if (hit.length > 0) {
+          setSelectedPaths((current) => {
+            const next = start.additive ? new Set(current) : new Set<string>();
+            hit.forEach((path) => next.add(pathKey(path)));
+            return next;
+          });
+        }
+        // 浏览器在 mouseup 之后还会在起点卡片上补发一次 click。那次 click 的坐标是
+        // 松开时的位置，与按下位置不同；用它和按下坐标比对，就能把拖拽余波和真点击区分开。
+        pointerDownRef.current = start.cardPath ? { path: start.cardPath, x: start.clientX, y: start.clientY } : null;
       }
-    }, { rootMargin: "800px 0px" });
-    observer.observe(loadMore);
-    return () => observer.disconnect();
-  }, [images.length, visibleCount]);
+      marqueeStartRef.current = null;
+      marqueeRectRef.current = null;
+      marqueeMovedRef.current = false;
+      setMarquee(null);
+      setMarqueeActive(false);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [marqueeActive]);
+
+  const handleGridMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    // 控件上的按下不启动框选，避免和按钮、复选框打架。
+    if (target.closest("button, input, label, a")) return;
+    const container = gridRef.current;
+    if (!container) return;
+    event.preventDefault();
+    const bounds = container.getBoundingClientRect();
+    const cardPath = target.closest("[data-gallery-path]")?.getAttribute("data-gallery-path") ?? null;
+    marqueeStartRef.current = { x: event.clientX - bounds.left, y: event.clientY - bounds.top, clientX: event.clientX, clientY: event.clientY, additive: event.ctrlKey || event.metaKey, cardPath };
+    pointerDownRef.current = cardPath ? { path: cardPath, x: event.clientX, y: event.clientY } : null;
+    marqueeMovedRef.current = false;
+    marqueeRectRef.current = null;
+    setMarqueeActive(true);
+  };
+  const handleCardClick = (path: string, event: ReactMouseEvent<HTMLElement>) => {
+    const down = pointerDownRef.current;
+    pointerDownRef.current = null;
+    // 拖拽结束后浏览器会在起点卡片补发一次 click；它的坐标是松开位置，与按下位置不同。
+    // 坐标一致才是用户真的点了一下。
+    if (down && down.path === path && (Math.abs(event.clientX - down.x) > 2 || Math.abs(event.clientY - down.y) > 2)) return;
+    toggleSelected(path);
+  };
+
   useEffect(() => {
     const filePaths = images
-      .slice(0, visibleCount + ONLINE_PAGE_SIZE)
-      .map((image) => image.localPath)
+      .slice((currentPage - 1) * pageSize, currentPage * pageSize + pageSize)
+      .map((item) => item.path)
       .filter((filePath) => !prewarmedImagePaths.current.has(filePath));
     if (filePaths.length === 0) return;
     filePaths.forEach((filePath) => prewarmedImagePaths.current.add(filePath));
     void api.prewarmImageAssets(filePaths, "grid").catch(() => {
       filePaths.forEach((filePath) => prewarmedImagePaths.current.delete(filePath));
     });
-  }, [api, images, visibleCount]);
+  }, [api, images, currentPage, pageSize]);
+
+  const runBatch = (key: string, action: () => Promise<unknown>) => run(key, async () => { await action(); clearSelection(); });
+  const pageNumbers = useMemo(() => {
+    const pages: number[] = [];
+    const window = 2;
+    for (let index = 1; index <= totalPages; index += 1) {
+      if (index === 1 || index === totalPages || Math.abs(index - currentPage) <= window) pages.push(index);
+    }
+    return pages;
+  }, [currentPage, totalPages]);
+
   return <div className="prototype-page online-page">
     <div className="online-layout">
       <div className="online-primary">
-        <section className="content-section storage-section">
-          <SectionHeading title="存储概览" />
-          <div className="storage-overview">
-            <Metric label="已占用" value={`${(state.onlineStorageBytes / 1024 ** 3).toFixed(1)} GB`} sub={`/ ${state.onlineStorageLimitGb} GB 上限`} />
-            <Metric label="已下载" value={String(state.onlineImages.length)} sub="张原图" />
-            <Metric label="请求分辨率" value={`${state.onlineMinimumResolution}p`} sub="UPX8 参数" />
-          </div>
-        </section>
-        <section className="content-section">
-          <SectionHeading title="抓取来源" />
-          <div className="source-list">
-            {state.onlineSources.map((source) => <SourceRow key={source.id} source={source} api={api} busy={busy} run={run} />)}
-          </div>
-        </section>
         <section className="content-section gallery-section">
-          <SectionHeading title="已下载图片" action={<div className="gallery-controls"><input className="section-filter-input" type="search" aria-label="筛选已下载图片" placeholder="按文件名筛选" value={galleryFilter} onChange={(event) => { setGalleryFilter(event.target.value); setVisibleCount(ONLINE_PAGE_SIZE); }} />{state.taggingEnabled && <label className="inline-select">分类<select aria-label="按分类筛选图片" value={categoryFilter} onChange={(event) => { setCategoryFilter(event.target.value); setVisibleCount(ONLINE_PAGE_SIZE); }}><option value="all">全部分类</option>{upx8Categories.map((category) => <option key={category.key} value={category.key}>{category.label}</option>)}<option value="untagged">未打标</option></select></label>}<button className="action-button is-small" type="button" aria-label="刷新已下载图片" disabled={busy !== null} onClick={() => void run("refresh-online", () => api.rescanFolders())}><RefreshCw size={14} /> 刷新</button><label className="inline-select">来源<select aria-label="在线图片来源" value={sourceFilter} onChange={(event) => { setSourceFilter(event.target.value); setVisibleCount(ONLINE_PAGE_SIZE); }}><option value="all">全部来源</option>{state.onlineSources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label></div>} />
-          {images.length === 0 ? <EmptyState text={state.onlineImages.length === 0 ? "尚未下载在线图片" : "没有匹配的图片"} /> : <div className="online-gallery">{visibleImages.map((image) => <OnlineImageCard key={image.id} image={image} isFavorite={state.favoritePaths.some((path) => samePath(path, image.localPath))} api={api} busy={busy} run={run} onOpenViewer={onOpenViewer} openConfirm={openConfirm} />)}{visibleCount < images.length && <div ref={loadMoreRef} className="online-gallery-load-more" role="status" aria-label="加载更多在线图片"><LoaderCircle className="spin" size={14} /></div>}</div>}
+          <SectionHeading title={<>图库 <b>({images.length})</b></>} action={<div className="gallery-controls"><input className="section-filter-input" type="search" aria-label="筛选图库图片" placeholder="按文件名筛选" value={galleryFilter} onChange={(event) => { setGalleryFilter(event.target.value); }} />{state.taggingEnabled && <label className="inline-select">分类<select aria-label="按分类筛选图库图片" value={categoryFilter} onChange={(event) => { setCategoryFilter(event.target.value); }}><option value="all">全部分类</option>{upx8Categories.map((category) => <option key={category.key} value={category.key}>{category.label}</option>)}<option value="untagged">未打标</option></select></label>}<label className="inline-select">排序<select aria-label="图库排序方式" value={sort} onChange={(event) => setSort(event.target.value as GallerySort)}>{gallerySortOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><button className="action-button is-small" type="button" aria-label="刷新图库" disabled={busy !== null} onClick={() => void run("refresh-gallery", () => api.rescanFolders())}><RefreshCw size={14} /> 刷新</button></div>} />
+          <div className="gallery-source-tabs" role="tablist" aria-label="图库来源">
+            {sourceTabs.map((tab) => <button key={tab.id} className={source === tab.id ? "gallery-source-tab is-active" : "gallery-source-tab"} type="button" role="tab" aria-selected={source === tab.id} onClick={() => onSourceChange(tab.id)}>{tab.label}{!tab.enabled && <span className="gallery-source-flag">已停用</span>}<small>{tab.count}</small></button>)}
+          </div>
+          <p className="gallery-hint">当前{sort === "name" ? "按文件名排列" : "按更新时间排列（新→旧；本地图取文件修改时间，在线图取下载时间）"}，与切换顺序无关；停用目录的图片可见但不会参与轮转。点击图片或按住左键拖动可框选。</p>
+          <div className="gallery-batch-bar" role="region" aria-label="批量操作">
+            <span>已选 {selectedPaths.size} 张</span>
+            <button className="action-button is-small" type="button" onClick={pageSelectedCount === pageItems.length && pageItems.length > 0 ? unselectPage : selectPage}>{pageSelectedCount === pageItems.length && pageItems.length > 0 ? "取消全选本页" : "全选本页"}</button>
+            <button className="action-button is-small" type="button" onClick={selectAllFiltered}>全选筛选结果</button>
+            <button className="action-button is-small" type="button" onClick={invertPage}>反选本页</button>
+            <button className="action-button is-small" type="button" onClick={clearSelection}>清空</button>
+            <span className="gallery-batch-divider" />
+            <button className="action-button is-small" type="button" disabled={busy !== null || selectedPaths.size === 0} onClick={() => void runBatch("batch-skip", () => api.batchSkipPaths(selectedPathList))}>跳过</button>
+            <button className="action-button is-small" type="button" disabled={busy !== null || selectedPaths.size === 0 || !everySelectedSkipped} title={everySelectedSkipped ? undefined : "仅当所选图片全部处于跳过状态时可用"} onClick={() => void runBatch("batch-restore", () => api.batchRestoreSkipped(selectedPathList))}>取消跳过</button>
+            <button className="action-button is-small" type="button" disabled={busy !== null || selectedPaths.size === 0 || everySelectedFavorite} onClick={() => void runBatch("batch-favorite", () => api.batchFavorite(selectedPathList, true))}>喜欢</button>
+            <button className="action-button is-small" type="button" disabled={busy !== null || selectedPaths.size === 0 || !everySelectedFavorite} onClick={() => void runBatch("batch-unfavorite", () => api.batchFavorite(selectedPathList, false))}>取消喜欢</button>
+            <button className="action-button is-small is-danger" type="button" disabled={busy !== null || selectedPaths.size === 0} onClick={() => openConfirm({ title: `删除 ${selectedPaths.size} 张图片`, description: `将从磁盘删除所选 ${selectedPaths.size} 张图片并移入系统回收站，同时清理其跳过与喜欢记录。回收站中的文件仍可手动还原。`, confirmLabel: "删除", busyKey: "batch-delete", action: () => api.batchDeletePaths(selectedPathList).then((next) => { clearSelection(); return next; }) })}>删除</button>
+          </div>
+          {images.length === 0 ? <EmptyState text={items.length === 0 ? "图库还没有图片，先添加壁纸目录或同步在线来源" : "没有匹配的图片"} /> : <div className="online-gallery" ref={gridRef} onMouseDown={handleGridMouseDown}>
+            {pageItems.map((item) => <GalleryCard key={pathKey(item.path)} item={item} folderName={item.kind === "local" ? pathName(folderById.get(item.folderId)?.path ?? item.folderId) : undefined} category={tagByPath.get(pathKey(item.path))} isCurrent={currentKey === pathKey(item.path)} isSkipped={skippedKeys.has(pathKey(item.path))} isFavorite={favoriteKeys.has(pathKey(item.path))} selected={selectedPaths.has(pathKey(item.path))} multiSelected={multiSelected} onCardClick={handleCardClick} onToggleSelect={toggleSelected} api={api} busy={busy} run={run} onOpenViewer={onOpenViewer} openConfirm={openConfirm} />)}
+            {marquee && <div className="gallery-marquee" aria-hidden="true" style={{ left: marquee.left, top: marquee.top, width: marquee.width, height: marquee.height }} />}
+          </div>}
+          {images.length > 0 && <div className="gallery-pagination" role="navigation" aria-label="图库分页">
+            <span className="gallery-pagination-summary">第 {currentPage} / {totalPages} 页 · 共 {images.length} 张</span>
+            <button className="action-button is-small" type="button" aria-label="上一页" disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button>
+            {pageNumbers.map((pageNumber, index) => <span key={pageNumber} className="gallery-pagination-item">{index > 0 && pageNumber - pageNumbers[index - 1] > 1 && <i>…</i>}<button className={pageNumber === currentPage ? "gallery-page-button is-active" : "gallery-page-button"} type="button" aria-label={`第 ${pageNumber} 页`} aria-current={pageNumber === currentPage ? "page" : undefined} onClick={() => setPage(pageNumber)}>{pageNumber}</button></span>)}
+            <button className="action-button is-small" type="button" aria-label="下一页" disabled={currentPage >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>下一页</button>
+            <label className="inline-select gallery-page-size">每页<select aria-label="每页显示张数" value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>{[24, 48, 96, 192].map((size) => <option key={size} value={size}>{size}</option>)}</select></label>
+          </div>}
         </section>
       </div>
       <aside className="online-settings">
+        <section className="side-panel" aria-label="存储概览">
+          <div className="side-panel-heading"><span>存储概览</span></div>
+          <div className="storage-compact">
+            <div><span>已占用</span><strong>{(state.onlineStorageBytes / 1024 ** 3).toFixed(1)} GB</strong><small>/ {state.onlineStorageLimitGb} GB 上限</small></div>
+            <div><span>已下载</span><strong>{state.onlineImages.length}</strong><small>张原图</small></div>
+            <div><span>请求分辨率</span><strong>{state.onlineMinimumResolution}p</strong><small>UPX8 参数</small></div>
+          </div>
+        </section>
         <div className="side-setting"><span>受管在线目录</span><strong title={state.onlineDirectory ?? ""}>{state.onlineDirectory ?? "尚未设置"}</strong><button className="action-button is-small" type="button" onClick={() => void run("select-directory", () => api.selectOnlineDirectory())}><FolderOpen size={14} /> 选择目录</button></div>
         <div className="side-setting"><label>容量上限<select aria-label="在线目录容量上限" value={state.onlineStorageLimitGb} onChange={(event) => updateConfig({ onlineStorageLimitGb: Number(event.target.value) as AppConfig["onlineStorageLimitGb"] })}>{[1, 5, 10, 20].map((size) => <option key={size} value={size}>{size} GB</option>)}</select></label></div>
         <div className="side-setting"><label>请求分辨率<select aria-label="在线图片请求分辨率" value={state.onlineMinimumResolution} onChange={(event) => updateConfig({ onlineMinimumResolution: Number(event.target.value) as AppConfig["onlineMinimumResolution"] })}>{[1920, 2560, 3840].map((size) => <option key={size} value={size}>{size}p</option>)}</select></label></div>
         <p>在线来源默认关闭，只有启用或手动抓取后才会联网。</p>
-        <section className="sync-log-panel" aria-labelledby="sync-log-title">
-          <div className="side-panel-heading"><span id="sync-log-title">同步记录</span><small>{state.onlineSyncLogs.length}</small></div>
+        <div className="side-setting">
+          <span>已排除下载 ({state.excludedImageUrls.length})</span>
+          <strong>{state.excludedImageUrls.length === 0 ? "暂无排除记录" : "删除过的图不会被再次同步"}</strong>
+          {state.excludedImageUrls.length > 0 && <details className="excluded-list">
+            <summary>查看已排除的 {state.excludedImageUrls.length} 个地址</summary>
+            <ul>
+              {state.excludedImageUrls.map((url) => <li key={url}><code title={url}>{url}</code><button className="icon-button" type="button" aria-label={`移出排除 ${url}`} title="移出排除，下次同步会重新下载" disabled={busy !== null} onClick={() => void run(`excluded-remove-${url}`, () => api.removeExcludedImageUrl(url))}><X size={12} /></button></li>)}
+            </ul>
+          </details>}
+          <button className="action-button is-small" type="button" disabled={busy !== null || state.excludedImageUrls.length === 0} onClick={() => openConfirm({ title: "清空排除记录", description: `将忘记 ${state.excludedImageUrls.length} 个已删除图片的源地址，之后同步来源时会重新下载它们。`, confirmLabel: "清空", busyKey: "clear-excluded", action: () => api.clearExcludedImageUrls() })}>清空排除记录</button>
+        </div>
+        <details className="side-collapse">
+          <summary>抓取来源 ({state.onlineSources.length})</summary>
+          <div className="source-list">
+            {state.onlineSources.map((source) => <SourceRow key={source.id} source={source} api={api} busy={busy} run={run} />)}
+          </div>
+        </details>
+        <details className="side-collapse" open>
+          <summary>同步记录 ({state.onlineSyncLogs.length})</summary>
           {state.onlineSyncLogs.length === 0 ? <div className="sync-log-empty">暂无同步记录</div> : <>
             <div className="sync-log-list">
               {state.onlineSyncLogs.map((log) => <SyncLogListItem key={log.id} log={log} selected={log.id === selectedLog?.id} onSelect={() => setSelectedLogId(log.id)} />)}
             </div>
             {selectedLog && <SyncLogDetail log={selectedLog} />}
           </>}
-        </section>
+        </details>
       </aside>
     </div>
   </div>;
@@ -672,10 +890,11 @@ function SourceRow({ source, api, busy, run }: { source: OnlineSource; api: Desk
   </article>;
 }
 
-function OnlineImageCard({ image, isFavorite, api, busy, run, onOpenViewer, openConfirm }: { image: OnlineImage; isFavorite: boolean; api: DesktopRuntime; busy: string | null; run: (key: string, action: () => Promise<unknown>) => Promise<void>; onOpenViewer: (filePath: string) => void; openConfirm: (options: ConfirmOptions) => void }) {
+function GalleryCard({ item, folderName, category, isCurrent, isSkipped, isFavorite, selected, multiSelected, onCardClick, onToggleSelect, api, busy, run, onOpenViewer, openConfirm }: { item: GalleryItem; folderName?: string; category?: string; isCurrent: boolean; isSkipped: boolean; isFavorite: boolean; selected: boolean; multiSelected: boolean; onCardClick: (path: string, event: ReactMouseEvent<HTMLElement>) => void; onToggleSelect: (path: string) => void; api: DesktopRuntime; busy: string | null; run: (key: string, action: () => Promise<unknown>) => Promise<void>; onOpenViewer: (filePath: string) => void; openConfirm: (options: ConfirmOptions) => void }) {
   const cardRef = useRef<HTMLElement>(null);
   const [thumbnail, setThumbnail] = useState<string | null>(null);
   const [isVisible, setIsVisible] = useState(false);
+  const isOnline = item.kind === "online";
   useEffect(() => {
     const card = cardRef.current;
     if (!card) return;
@@ -695,14 +914,42 @@ function OnlineImageCard({ image, isFavorite, api, busy, run, onOpenViewer, open
   useEffect(() => {
     if (!isVisible) return;
     let cancelled = false;
-    void api.getImageAsset(image.localPath, "grid")
+    void api.getImageAsset(item.path, "grid")
       .then((asset) => { if (!cancelled && asset) setThumbnail(asset.src); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [api, image.id, isVisible]);
-  return <article ref={cardRef} className="online-image-card">
-    {thumbnail ? <img src={thumbnail} alt={pathName(image.localPath)} loading="lazy" decoding="async" /> : <div className="online-image-placeholder" role="img" aria-label={`${pathName(image.localPath)} 缩略图加载中`} />}
-    <div><strong title={pathName(image.localPath)}>{pathName(image.localPath)}</strong><span>{image.width}×{image.height} · {formatDate(image.downloadedAt)}</span><div className="image-actions"><button className="action-button is-small is-primary" type="button" disabled={busy !== null} onClick={() => void run(`set-${image.id}`, () => api.setOnlineImageAsWallpaper(image.id))}>{busy === `set-${image.id}` ? "设置中..." : "设为壁纸"}</button><button className="icon-button" type="button" aria-label={`查看原图 ${pathName(image.localPath)}`} title="查看原图" onClick={() => onOpenViewer(image.localPath)}><Maximize2 size={14} /></button><button className={isFavorite ? "icon-button favorite-toggle is-favorite" : "icon-button favorite-toggle"} type="button" aria-label={`${isFavorite ? "取消喜欢" : "喜欢"} ${pathName(image.localPath)}`} title={isFavorite ? "取消喜欢" : "喜欢"} disabled={busy !== null} onClick={() => void run(`favorite-${image.id}`, () => api.toggleFavorite(image.localPath))}><Heart size={14} fill={isFavorite ? "currentColor" : "none"} /></button><button className="icon-button" type="button" aria-label={`打开 ${pathName(image.localPath)}`} title="打开所在目录" disabled={busy !== null} onClick={() => void run(`reveal-${image.id}`, () => api.revealOnlineImage(image.id))}><FolderOpen size={14} /></button><button className="icon-button is-danger" type="button" aria-label={`删除 ${pathName(image.localPath)}`} title="删除" disabled={busy !== null} onClick={() => openConfirm({ title: "删除在线图片", description: `将从磁盘删除 ${pathName(image.localPath)} 并移入系统回收站，同时移除其喜欢记录。回收站中的文件仍可手动还原。`, confirmLabel: "删除", busyKey: `delete-image-${image.id}`, action: () => api.deleteOnlineImage(image.id) })}>{busy === `delete-image-${image.id}` ? "删除中..." : <Trash2 size={14} />}</button></div></div>
+  }, [api, item.path, isVisible]);
+  const setAsWallpaper = isOnline ? () => api.setOnlineImageAsWallpaper(item.online.id) : () => api.selectWallpaper(item.path);
+  const reveal = isOnline ? () => api.revealOnlineImage(item.online.id) : () => api.revealWallpaper(item.path);
+  const deleteKey = isOnline ? `delete-image-${item.online.id}` : `delete-local-${item.path}`;
+  const requestDelete = () => openConfirm(isOnline
+    ? { title: "删除在线图片", description: `将从磁盘删除 ${pathName(item.path)} 并移入系统回收站，同时移除其喜欢记录。回收站中的文件仍可手动还原。`, confirmLabel: "删除", busyKey: deleteKey, action: () => api.deleteOnlineImage(item.online.id) }
+    : { title: "删除图片文件", description: `将从磁盘删除 ${pathName(item.path)}，移入系统回收站，并同步移除其跳过与喜欢记录。`, confirmLabel: "删除", busyKey: deleteKey, action: () => api.batchDeletePaths([item.path]) });
+  const categoryLabel = category ? upx8Categories.find((entry) => entry.key === category)?.label ?? category : null;
+  return <article ref={cardRef} data-gallery-path={item.path} className={selected ? "online-image-card is-selected" : "online-image-card"} onClick={(event) => onCardClick(item.path, event)}>
+    <label className="gallery-card-select" onClick={(event) => event.stopPropagation()}>
+      <input type="checkbox" checked={selected} aria-label={`选择 ${pathName(item.path)}`} onChange={() => onToggleSelect(item.path)} />
+    </label>
+    {thumbnail ? <img src={thumbnail} alt={pathName(item.path)} loading="lazy" decoding="async" draggable={false} /> : <div className="online-image-placeholder" role="img" aria-label={`${pathName(item.path)} 缩略图加载中`} />}
+    <div>
+      <strong title={pathName(item.path)}>{pathName(item.path)}</strong>
+      <span>{isOnline ? `${item.online.width}×${item.online.height} · ${formatDate(item.online.downloadedAt)}` : `${folderName ?? item.folderId}${item.kind === "local" && !item.folderEnabled ? " · 已停用" : ""}`}</span>
+      <div className="gallery-card-tags">
+        {isOnline ? <Tag tone="cyan">在线</Tag> : <Tag tone="blue">本地</Tag>}
+        {item.kind === "local" && !item.folderEnabled && <Tag tone="amber">不参与轮转</Tag>}
+        {categoryLabel && <Tag tone="green">{categoryLabel}</Tag>}
+        {isCurrent && <Tag tone="green">当前壁纸</Tag>}
+        {isSkipped && <Tag tone="amber">已跳过</Tag>}
+        {isFavorite && <Tag tone="red">已喜欢</Tag>}
+      </div>
+      <div className="image-actions" onClick={(event) => event.stopPropagation()}>
+        <button className="action-button is-small is-primary" type="button" title={multiSelected ? "多选状态下不能设为壁纸" : undefined} disabled={busy !== null || multiSelected} onClick={() => void run(`set-${item.path}`, setAsWallpaper)}>设为壁纸</button>
+        <button className="icon-button" type="button" aria-label={`查看原图 ${pathName(item.path)}`} title="查看原图" onClick={() => onOpenViewer(item.path)}><Maximize2 size={14} /></button>
+        <button className={isFavorite ? "icon-button favorite-toggle is-favorite" : "icon-button favorite-toggle"} type="button" aria-label={`${isFavorite ? "取消喜欢" : "喜欢"} ${pathName(item.path)}`} title={isFavorite ? "取消喜欢" : "喜欢"} disabled={busy !== null} onClick={() => void run(`favorite-${item.path}`, () => api.toggleFavorite(item.path))}><Heart size={14} fill={isFavorite ? "currentColor" : "none"} /></button>
+        <button className="icon-button" type="button" aria-label={`打开 ${pathName(item.path)}`} title="打开所在目录" disabled={busy !== null} onClick={() => void run(`reveal-${item.path}`, reveal)}><FolderOpen size={14} /></button>
+        <button className="icon-button is-danger" type="button" aria-label={`删除 ${pathName(item.path)}`} title="删除" disabled={busy !== null} onClick={requestDelete}>{busy === deleteKey ? "删除中..." : <Trash2 size={14} />}</button>
+      </div>
+    </div>
   </article>;
 }
 
@@ -713,8 +960,19 @@ function SettingsView({ state, api, busy, run, updateConfig }: { state: AppState
   useEffect(() => setSkipShortcut(state.globalSkipShortcut ?? ""), [state.globalSkipShortcut]);
   const saveNextShortcut = () => { const value = nextShortcut.trim() || null; if (value !== state.globalNextShortcut) updateConfig({ globalNextShortcut: value }); };
   const saveSkipShortcut = () => { const value = skipShortcut.trim() || null; if (value !== state.globalSkipShortcut) updateConfig({ globalSkipShortcut: value }); };
+  /** 间隔以本地草稿形式编辑，失焦或回车才提交，避免每敲一个数字就落盘。 */
+  const [intervalDraft, setIntervalDraft] = useState(String(state.intervalMinutes));
+  useEffect(() => setIntervalDraft(String(state.intervalMinutes)), [state.intervalMinutes]);
+  const parsedInterval = Number.parseInt(intervalDraft.trim(), 10);
+  const intervalPreview = clampIntervalMinutes(Number.isFinite(parsedInterval) ? parsedInterval : state.intervalMinutes);
+  const intervalClamped = Number.isFinite(parsedInterval) && intervalPreview !== parsedInterval;
+  const commitInterval = () => {
+    const next = clampIntervalMinutes(Number.isFinite(parsedInterval) ? parsedInterval : state.intervalMinutes);
+    setIntervalDraft(String(next));
+    if (next !== state.intervalMinutes) updateConfig({ intervalMinutes: next });
+  };
   return <div className="prototype-page settings-page">
-    <SettingsPanel title="自动切换"><SettingsRow label="切换间隔" description="下一张壁纸的等待时长"><select aria-label="切换间隔" value={state.intervalMinutes} onChange={(event) => updateConfig({ intervalMinutes: Number(event.target.value) })}>{intervalOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></SettingsRow><SettingsRow label="切换顺序" description={state.rotationOrder === "random" ? "一轮内不重复" : "按绝对路径稳定循环"}><div className="segmented-control"><button type="button" className={state.rotationOrder === "random" ? "is-selected" : undefined} onClick={() => updateConfig({ rotationOrder: "random" })}>随机</button><button type="button" className={state.rotationOrder === "sequential" ? "is-selected" : undefined} onClick={() => updateConfig({ rotationOrder: "sequential" as RotationOrder })}>顺序</button></div></SettingsRow><SettingsRow label="显示方式" description="壁纸填充屏幕的方式"><select aria-label="设置显示方式" value={state.displayMode} onChange={(event) => updateConfig({ displayMode: event.target.value as WallpaperMode })}>{displayModes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select></SettingsRow></SettingsPanel>
+    <SettingsPanel title="自动切换"><SettingsRow label="切换间隔" description="下一张壁纸的等待时长，手动输入后回车或移出输入框生效"><div className="interval-editor"><input aria-label="切换间隔（分钟）" type="number" inputMode="numeric" min={INTERVAL_MINUTES.min} max={INTERVAL_MINUTES.max} step={1} value={intervalDraft} onChange={(event) => setIntervalDraft(event.target.value)} onBlur={commitInterval} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><span className="interval-unit">分钟</span><small className={intervalClamped ? "interval-hint is-clamped" : "interval-hint"}>{intervalClamped ? `将限制为 ${formatInterval(intervalPreview)}` : formatInterval(intervalPreview)}</small></div></SettingsRow><SettingsRow label="切换顺序" description={state.rotationOrder === "random" ? "一轮内不重复" : "按绝对路径稳定循环"}><div className="segmented-control"><button type="button" className={state.rotationOrder === "random" ? "is-selected" : undefined} onClick={() => updateConfig({ rotationOrder: "random" })}>随机</button><button type="button" className={state.rotationOrder === "sequential" ? "is-selected" : undefined} onClick={() => updateConfig({ rotationOrder: "sequential" as RotationOrder })}>顺序</button></div></SettingsRow><SettingsRow label="显示方式" description="壁纸填充屏幕的方式"><select aria-label="设置显示方式" value={state.displayMode} onChange={(event) => updateConfig({ displayMode: event.target.value as WallpaperMode })}>{displayModes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select></SettingsRow></SettingsPanel>
     <SettingsPanel title="系统集成"><SettingsRow label="开机自动启动" description="仅在系统托盘运行，不显示主窗口"><Toggle label="开机自动启动" checked={state.autoStart} onChange={(autoStart) => updateConfig({ autoStart })} /></SettingsRow><SettingsRow label="跟随系统主题" description="深色 / 浅色主题切换时同步调整"><Toggle label="跟随系统主题" checked={state.followSystemTheme} onChange={(followSystemTheme) => updateConfig({ followSystemTheme })} /></SettingsRow><SettingsRow label="关闭窗口时隐藏到托盘" description="关闭后继续在后台运行"><Toggle label="关闭窗口时隐藏到托盘" checked={state.hideToTrayOnClose} onChange={(hideToTrayOnClose) => updateConfig({ hideToTrayOnClose })} /></SettingsRow></SettingsPanel>
     <TaggingSettings state={state} api={api} busy={busy} run={run} />
     <SettingsPanel title="全局快捷键"><SettingsRow label="下一张壁纸" description="保存时立即尝试注册"><div className="shortcut-editor"><input aria-label="全局下一张快捷键" placeholder="例如 Ctrl+Alt+N" value={nextShortcut} onChange={(event) => setNextShortcut(event.target.value)} onBlur={saveNextShortcut} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><ShortcutStatusTag status={state.shortcutStatus} /></div></SettingsRow><SettingsRow label="跳过此图" description="保存时立即尝试注册"><div className="shortcut-editor"><input aria-label="全局跳过快捷键" placeholder="例如 Ctrl+Alt+S" value={skipShortcut} onChange={(event) => setSkipShortcut(event.target.value)} onBlur={saveSkipShortcut} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><ShortcutStatusTag status={state.skipShortcutStatus} /></div></SettingsRow></SettingsPanel>
@@ -859,7 +1117,8 @@ function createBrowserPreviewApi(): DesktopRuntime {
     intervalMinutes: 30, displayMode: "fill", rotationOrder: "random", autoStart: true, paused: false, followSystemTheme: true, hideToTrayOnClose: true,
     currentPath: "D:\\Pictures\\Wallpapers\\Scenic\\mist-over-the-ridge.jpg", remainingPaths: previewItems.slice(1).map((item) => item.path), skippedPaths: [], favoritePaths: [], wallpaperHistory: [], globalNextShortcut: null, globalSkipShortcut: null, lastSwitchAt: new Date(Date.now() - 8 * 60_000).toISOString(),
     onlineSources: [{ id: "upx8-4k", name: "UPX8 综合壁纸 4K", url: "https://wp.upx8.com/api.php", enabled: true, intervalHours: 24, lastRunAt: null, nextRunAt: null, lastDiscovered: 0, lastDownloaded: 0, lastError: null, categoryStatuses: [] }],
-    onlineImages: [], onlineSyncLogs: [], onlineDirectory: "D:\\Pictures\\ZX Wallpaper\\Online", onlineStorageLimitGb: 5, onlineMinimumResolution: 1920,
+    onlineImages: [], excludedImageUrls: [], onlineSyncLogs: [], onlineDirectory: "D:\\Pictures\\ZX Wallpaper\\Online", onlineStorageLimitGb: 5, onlineMinimumResolution: 1920,
+    libraryImages: previewItems.map((item, index) => ({ path: item.path, folderId: "demo-scenic", folderEnabled: true, modifiedAt: new Date(Date.now() - index * 3_600_000).toISOString() })),
     widgetLayout: { docked: "right", x: null, y: null },
     imageTags: [], taggingEnabled: false,
     availableCount: 128, previewUrl: previewImage, previewItems,
@@ -887,8 +1146,12 @@ function createBrowserPreviewApi(): DesktopRuntime {
     skipCurrentWallpaper: () => update({ skippedPaths: state.currentPath ? [...state.skippedPaths, state.currentPath] : state.skippedPaths, currentPath: nextPath }),
     toggleFavorite: (path) => update({ favoritePaths: state.favoritePaths.some((item) => samePath(item, path)) ? state.favoritePaths.filter((item) => !samePath(item, path)) : [...state.favoritePaths, path] }),
     restoreSkippedPath: (path) => update({ skippedPaths: state.skippedPaths.filter((item) => item !== path) }), restoreAllSkipped: () => update({ skippedPaths: [] }), deleteSkippedPath: (path) => update({ skippedPaths: state.skippedPaths.filter((item) => item !== path) }), deleteAllSkipped: () => update({ skippedPaths: [] }), togglePaused: () => update({ paused: !state.paused }),
+    batchSkipPaths: (paths) => update({ skippedPaths: [...new Set([...state.skippedPaths, ...paths])] }),
+    batchRestoreSkipped: (paths) => update({ skippedPaths: state.skippedPaths.filter((item) => !paths.some((path) => samePath(item, path))) }),
+    batchFavorite: (paths, favorite) => update({ favoritePaths: favorite ? [...new Set([...state.favoritePaths, ...paths])] : state.favoritePaths.filter((item) => !paths.some((path) => samePath(item, path))) }),
+    batchDeletePaths: (paths) => update({ libraryImages: state.libraryImages.filter((item) => !paths.some((path) => samePath(item.path, path))), favoritePaths: state.favoritePaths.filter((item) => !paths.some((path) => samePath(item, path))), skippedPaths: state.skippedPaths.filter((item) => !paths.some((path) => samePath(item, path))) }),
     updateOnlineSource: (source) => update({ onlineSources: state.onlineSources.map((item) => item.id === source.id ? source : item) }), runOnlineSource: () => Promise.resolve(state), runUpx8Category: () => Promise.resolve(state),
-    setOnlineImageAsWallpaper: (id) => { const image = state.onlineImages.find((item) => item.id === id); return image ? update({ currentPath: image.localPath, paused: true }) : Promise.resolve(state); }, deleteOnlineImage: (id) => update({ onlineImages: state.onlineImages.filter((image) => image.id !== id), favoritePaths: state.favoritePaths.filter((path) => !samePath(path, state.onlineImages.find((image) => image.id === id)?.localPath ?? "")) }), selectOnlineDirectory: () => update({ onlineDirectory: "D:\\Pictures\\ZX Wallpaper Library" }), revealOnlineImage: () => Promise.resolve(state), revealWallpaper: () => Promise.resolve(),
+    setOnlineImageAsWallpaper: (id) => { const image = state.onlineImages.find((item) => item.id === id); return image ? update({ currentPath: image.localPath, paused: true }) : Promise.resolve(state); }, deleteOnlineImage: (id) => { const image = state.onlineImages.find((item) => item.id === id); return update({ onlineImages: state.onlineImages.filter((item) => item.id !== id), excludedImageUrls: image && !state.excludedImageUrls.includes(image.imageUrl) ? [...state.excludedImageUrls, image.imageUrl] : state.excludedImageUrls, favoritePaths: state.favoritePaths.filter((path) => !samePath(path, image?.localPath ?? "")) }); }, clearExcludedImageUrls: () => update({ excludedImageUrls: [] }), removeExcludedImageUrl: (url) => update({ excludedImageUrls: state.excludedImageUrls.filter((known) => known !== url) }), selectOnlineDirectory: () => update({ onlineDirectory: "D:\\Pictures\\ZX Wallpaper Library" }), revealOnlineImage: () => Promise.resolve(state), revealWallpaper: () => Promise.resolve(),
     getWidgetLayout: () => Promise.resolve(state.widgetLayout), setWidgetLayout: (layout) => update({ widgetLayout: layout }),
     setTaggingEnabled: (enabled) => update({ taggingEnabled: enabled }),
     getTaggingStatus: () => Promise.resolve({ enabled: state.taggingEnabled, modelReady: false, downloading: null, pending: 0 }),
@@ -911,10 +1174,18 @@ function operationMessage(key: string, phase: "pending" | "success") {
   const pending = phase === "pending";
   if (key.startsWith("set-")) return pending ? "正在设置壁纸并同步所有显示器..." : "已设为壁纸，所有显示器已同步，自动切换已暂停。";
   if (key.startsWith("delete-image-")) return pending ? "正在删除在线图片..." : "在线图片已移入回收站。";
+  if (key.startsWith("delete-local-")) return pending ? "正在删除图片文件..." : "图片文件已移入回收站。";
   if (key === "delete-all-skipped") return pending ? "正在删除已跳过图片..." : "已跳过图片已全部移入回收站。";
   if (key === "delete-skipped-file") return pending ? "正在删除图片文件..." : "图片文件已移入回收站。";
+  if (key === "batch-delete") return pending ? "正在批量删除图片..." : "所选图片已移入回收站。";
+  if (key === "batch-skip") return pending ? "正在批量跳过图片..." : "所选图片已跳过，不再参与轮转。";
+  if (key === "batch-restore") return pending ? "正在恢复图片..." : "所选图片已恢复参与轮转。";
+  if (key === "batch-favorite") return pending ? "正在标记喜欢..." : "所选图片已加入喜欢。";
+  if (key === "batch-unfavorite") return pending ? "正在取消喜欢..." : "所选图片已取消喜欢。";
+  if (key === "clear-excluded") return pending ? "正在清空排除记录..." : "排除记录已清空，已删除的图可再次同步。";
+  if (key.startsWith("excluded-remove-")) return pending ? "正在移出排除记录..." : "已移出排除记录，下次同步会重新下载这张图。";
   if (key.startsWith("run-")) return pending ? "正在抓取在线来源，下载原图可能需要一些时间..." : "在线来源抓取已完成，请查看发现和下载数量。";
-  if (key === "refresh-online") return pending ? "正在刷新已下载图片..." : "已刷新图片列表。";
+  if (key === "refresh-gallery" || key === "refresh-online") return pending ? "正在刷新图库..." : "图库已刷新。";
   if (key.startsWith("tagging-")) return pending ? "正在更新智能分类设置..." : "智能分类设置已更新。";
   return pending ? "正在处理..." : "操作已完成。";
 }
@@ -923,7 +1194,13 @@ function operationError(cause: unknown) {
   if (cause instanceof Error && cause.message) return cause.message;
   return "操作未完成，请检查相关目录或来源后重试。";
 }
-function formatInterval(minutes: number) { return intervalOptions.find((option) => option.value === minutes)?.label ?? `${minutes} 分钟`; }
+function clampIntervalMinutes(minutes: number) { return Math.min(INTERVAL_MINUTES.max, Math.max(INTERVAL_MINUTES.min, Math.round(minutes))); }
+/** 手动输入没有预设选项，分钟数统一写成「N 天 N 小时 N 分钟」，避免出现「1440 分钟」。 */
+function formatInterval(minutes: number) {
+  const total = clampIntervalMinutes(minutes);
+  const parts = [Math.floor(total / 1440) ? `${Math.floor(total / 1440)} 天` : "", Math.floor((total % 1440) / 60) ? `${Math.floor((total % 1440) / 60)} 小时` : "", total % 60 ? `${total % 60} 分钟` : ""].filter(Boolean);
+  return parts.join(" ") || "1 分钟";
+}
 function formatTime(value: string) { return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
 function formatDate(value: string) { return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(new Date(value)); }
 function formatLogTime(value: string) { return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value)); }

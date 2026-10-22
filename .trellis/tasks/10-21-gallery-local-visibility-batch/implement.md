@@ -114,6 +114,18 @@ npm run build && cd src-tauri && cargo test
 - 本地目录放入 ≥1000 张图，记录单次 `mutate`（切一张壁纸）的耗时与 `AppState` JSON 体积。
 - 超过 30 ms 或 400 KB → 触发退化路径（按需命令），在 `prd.md` 备注后重走步骤 1/4。
 
+## 步骤 9 · 图库交互优化（用户本轮反馈）
+
+用户反馈四点：①点击图片本体应能选中；②要左键按压滑动框选；③「抓取来源 / 内容存储」模块放在列表下方不合理（要滑到底部）；④图库列表没分页/虚拟列表，滚动过长。
+
+- ①卡片本体可点选：整卡 `onClick` 切换选中，复选框与动作区 `stopPropagation`。
+- ②框选：容器 `mousedown` 起手 + `window` 级 `mousemove`/`mouseup`，矩形相交判定命中；`Ctrl`/`Cmd` 追加模式；4px 阈值区分点击与拖拽；拖拽余波 click 用**坐标比对**排除（按下坐标 vs click 坐标差 >2px 视为拖拽余波）。
+- ③布局：主区只留图库；`存储概览` 改为右侧栏三格紧凑卡，`抓取来源` / `同步记录` 改为右侧栏 `<details>` 折叠区（默认折叠）—— 列表下方不再有任何模块。
+- ④分页：改为真分页（默认 48/页，可选 24/48/96/192）+ 页码导航 + 省略号，DOM 节点数恒定；prewarm 范围 = 当前页 + 下一页；切来源/筛选/页大小重置到第 1 页。
+- 附带：来源 tab 过滤 `folder.id !== "online-library"`（受管在线目录不是用户目录）。
+- 测试：`selects a gallery image by clicking the card itself`、`selects every image inside a dragged marquee rectangle`、`keeps a normal card click working after a marquee drag`、`only renders the current page of a thousand local images`。
+- 浏览器实测（Playwright + 静态 dist 服务）：点击图片本体 → 「已选 1 张」；拖拽覆盖 3 张 → 「已选 3 张」，`.gallery-marquee` 渲染正常；框选后再单击 → 正常累加；Ctrl 框选 → 追加；点复选框 → 只切换该张。
+
 ## 评审门禁
 
 | 门禁 | 时机 |

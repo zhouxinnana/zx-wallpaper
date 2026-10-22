@@ -605,11 +605,7 @@ pub(crate) async fn run_online_source_impl(
             .clone()
             .map(PathBuf::from)
             .unwrap_or_else(|| default_online_directory(state));
-        let known_urls: HashSet<String> = config
-            .online_images
-            .iter()
-            .map(|image| image.image_url.clone())
-            .collect();
+        let known_urls = known_online_urls(&config);
         (
             source,
             directory,
@@ -980,14 +976,14 @@ pub async fn delete_online_image(
     state: State<'_, RuntimeState>,
     image_id: String,
 ) -> Result<AppState, String> {
-    let path = {
+    let (path, image_url) = {
         let config = lock_config(&state)?;
-        config
+        let image = config
             .online_images
             .iter()
             .find(|image| image.id == image_id)
-            .map(|image| image.local_path.clone())
-            .ok_or_else(|| "该在线图片已不存在。".to_string())?
+            .ok_or_else(|| "该在线图片已不存在。".to_string())?;
+        (image.local_path.clone(), image.image_url.clone())
     };
     let path_to_delete = path.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1003,10 +999,37 @@ pub async fn delete_online_image(
     .map_err(|error| format!("无法删除在线图片: {error}"))?;
     state.image_assets.purge_source(&path);
     mutate_without_rescan(&app, &state, move |config| {
+        // 删除即拉黑：记下源 URL，否则下一轮同步会把这张图重新下载回来。
+        remember_excluded_urls(config, std::iter::once(image_url));
         config.online_images.retain(|image| image.id != image_id);
         config
             .favorite_paths
             .retain(|favorite| !same_path(favorite, &path));
+        Ok(())
+    })
+}
+
+/// 清空「已排除」黑名单：之后被删过的图可以重新被同步下来。
+#[tauri::command]
+pub fn clear_excluded_image_urls(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+) -> Result<AppState, String> {
+    mutate_without_rescan(&app, &state, |config| {
+        config.excluded_image_urls.clear();
+        Ok(())
+    })
+}
+
+/// 单条解封：只把这一条移出黑名单，之后同步会重新下载它。
+#[tauri::command]
+pub fn remove_excluded_image_url(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    url: String,
+) -> Result<AppState, String> {
+    mutate_without_rescan(&app, &state, move |config| {
+        config.excluded_image_urls.retain(|known| known != &url);
         Ok(())
     })
 }
@@ -1187,6 +1210,38 @@ pub(crate) fn due_source_ids(config: &AppConfig, now: OffsetDateTime) -> Vec<Str
         .collect()
 }
 
+/// 同步时的「已知 URL」集合：库里现有的 + 用户删过的（黑名单）。
+/// 黑名单是唯一阻止「删了又被下回来」的机制 —— 删除会同时移除 online_images 记录，
+/// 只看 online_images 的话下一轮同步会把同一张图重新拉回来。
+pub(crate) fn known_online_urls(config: &AppConfig) -> HashSet<String> {
+    let mut known: HashSet<String> = config
+        .online_images
+        .iter()
+        .map(|image| image.image_url.clone())
+        .collect();
+    known.extend(config.excluded_image_urls.iter().cloned());
+    known
+}
+
+/// 把被删除图片的源 URL 记进黑名单（去重、保序）。
+pub(crate) fn remember_excluded_urls(
+    config: &mut AppConfig,
+    urls: impl IntoIterator<Item = String>,
+) {
+    for url in urls {
+        if url.is_empty() {
+            continue;
+        }
+        if !config
+            .excluded_image_urls
+            .iter()
+            .any(|known| known == &url)
+        {
+            config.excluded_image_urls.push(url);
+        }
+    }
+}
+
 pub(crate) fn prune_missing_online_images(config: &mut AppConfig) {
     config
         .online_images
@@ -1245,14 +1300,40 @@ fn select_online_wallpaper(config: &mut AppConfig, image_id: &str) -> Result<Str
 mod tests {
     use super::{
         due_source_ids, is_public_host,
-        is_upx8_cdn_url, merge_online_sources, migrate_online_directory,
-        prune_missing_online_images, reconcile_online_candidates, select_online_wallpaper,
+        is_upx8_cdn_url, known_online_urls, merge_online_sources, migrate_online_directory,
+        prune_missing_online_images, reconcile_online_candidates, remember_excluded_urls,
+        select_online_wallpaper,
         sort_online_images_by_downloaded_at, upx8_category_label, upx8_request_url,
         OnlineImage, OnlineSource, UPX8_CATEGORIES,
     };
     use crate::domain::same_path;
     use crate::state::{AppConfig, LibraryScan};
     use std::collections::HashMap;
+
+    #[test]
+    fn known_urls_include_deleted_images_so_sync_never_downloads_them_again() {
+        let mut config = AppConfig {
+            online_images: vec![OnlineImage {
+                image_url: "https://example.test/kept.jpg".into(),
+                ..OnlineImage::default()
+            }],
+            ..AppConfig::default()
+        };
+        remember_excluded_urls(
+            &mut config,
+            vec!["https://example.test/deleted.jpg".to_string()],
+        );
+        // 重复拉黑不应产生重复项。
+        remember_excluded_urls(
+            &mut config,
+            vec!["https://example.test/deleted.jpg".to_string()],
+        );
+
+        let known = known_online_urls(&config);
+        assert!(known.contains("https://example.test/kept.jpg"));
+        assert!(known.contains("https://example.test/deleted.jpg"));
+        assert_eq!(config.excluded_image_urls.len(), 1);
+    }
     use std::fs;
     use time::format_description::well_known::Rfc3339;
     use time::OffsetDateTime;
@@ -1411,6 +1492,7 @@ mod tests {
         let mut scan = LibraryScan {
             folder_statuses: HashMap::new(),
             candidates: vec![deleted.local_path.clone()],
+            library_images: Vec::new(),
         };
 
         reconcile_online_candidates(&mut scan, &[deleted], &[]);
