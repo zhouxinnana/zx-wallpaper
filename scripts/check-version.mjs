@@ -48,10 +48,11 @@ if (typeof declared === "string" && SEMVER.test(declared)) {
   problems.push("src-tauri/tauri.conf.json 缺少 version（应写 semver 或 ../package.json）");
 }
 
-const cargoTomlVersion = read("src-tauri/Cargo.toml").match(/^name = "zx-wallpaper"\nversion = "([^"]+)"/m)?.[1];
+// 用 \r?\n：GitHub Actions 的 Windows runner checkout 出 CRLF，只写 \n 会在这里漏匹配。
+const cargoTomlVersion = read("src-tauri/Cargo.toml").match(/^name = "zx-wallpaper"\r?\nversion = "([^"]+)"/m)?.[1];
 check("src-tauri/Cargo.toml", cargoTomlVersion);
 
-const cargoLockVersion = read("src-tauri/Cargo.lock").match(/^name = "zx-wallpaper"\nversion = "([^"]+)"/m)?.[1];
+const cargoLockVersion = read("src-tauri/Cargo.lock").match(/^name = "zx-wallpaper"\r?\nversion = "([^"]+)"/m)?.[1];
 check("src-tauri/Cargo.lock", cargoLockVersion);
 
 if (problems.length > 0) {

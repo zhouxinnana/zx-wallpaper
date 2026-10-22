@@ -31,9 +31,10 @@ const bumpJsonVersion = (text) => {
   return { text: text.replace(pattern, (_all, head, _old, tail) => `${head}${next}${tail}`), before };
 };
 
-/** Cargo.toml 的 [package] 与 Cargo.lock 的 [[package]] 都是 name 紧接 version。 */
+/** Cargo.toml 的 [package] 与 Cargo.lock 的 [[package]] 都是 name 紧接 version。
+ *  \r?\n 是必须的：CI checkout 出 CRLF，只写 \n 会匹配不到。 */
 const bumpCargoVersion = (text) => {
-  const pattern = /^(name = "zx-wallpaper"\nversion = ")([^"]+)(")/m;
+  const pattern = /^(name = "zx-wallpaper"\r?\nversion = ")([^"]+)(")/m;
   const match = text.match(pattern);
   return {
     text: text.replace(pattern, (_all, head, _old, tail) => `${head}${next}${tail}`),
