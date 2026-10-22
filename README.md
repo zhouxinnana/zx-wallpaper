@@ -43,13 +43,20 @@ npm run tauri:build
 
 ## 发布
 
-推送与 `package.json` 版本一致的 `vX.Y.Z` 标签后，GitHub Actions 会在 Windows 环境打包，并将 NSIS 安装器附加到 GitHub Release。
+版本号真源是 `package.json`：`tauri.conf.json` 通过 `"version": "../package.json"` 引用它，`Cargo.toml` / `Cargo.lock` 由脚本同步。
 
 ```powershell
+npm run version:bump 0.3.0   # 同步所有位置的版本号，并打印每处改动
+npm run version:check        # 校验一致性（CI 也会跑这一步）
+git commit -am "chore: release tauri v0.3.0"
+git push origin tauri_master
+
 $version = node -p "require('./package.json').version"
-git tag "v$version"
-git push origin "v$version"
+git tag "tauri-v$version"
+git push origin "tauri-v$version"
 ```
+
+推送 `tauri-vX.Y.Z` 标签后，GitHub Actions 会在 Windows 环境打包，并把 NSIS 安装器附加到 GitHub Release。标签名必须与 `package.json` 版本严格一致，且提交必须可达 `tauri_master`（workflow 会校验这两条）。
 
 ## 技术栈
 

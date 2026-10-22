@@ -12,6 +12,8 @@
     "tauri:build": "tauri build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "version:bump": "node scripts/bump-version.mjs",
+    "version:check": "node scripts/check-version.mjs",
     "build": "npm run typecheck && npm run web:build",
     "dist": "tauri build",
     "release:tag": "node -e \"const { execFileSync } = require('node:child_process'); const tag = 'tauri-v' + require('./package.json').version; execFileSync('git', ['tag', '-a', tag, '-m', 'Release ' + tag], { stdio: 'inherit' });\"",
