@@ -74,7 +74,8 @@ ZX Wallpaper 面向希望管理本地壁纸库、保持桌面氛围稳定的 Win
 
 - `CurrentWallpaper`：当前文件名、预览、路径、暂停和立即切换。
 - `SectionHeading`：图标、标题和真实的设置顺序编号。
-- `SelectField`：切换间隔、显示方式。
+- `SelectField`：显示方式。
+- `IntervalField`：切换间隔，手动输入分钟数（1 ~ 43200），失焦或回车提交，旁边显示等价值预览。
 - `ToggleRow`：开机启动、跟随系统主题。
 - `FolderRow`：目录序号、目录名、路径、启用状态、开关、移除操作。
 

@@ -16,6 +16,44 @@ cargo test          # 在 src-tauri/ 目录下运行
 
 ---
 
+## 命令执行纪律（禁止盲等）
+
+**禁止把 `sleep N` 当作等待手段。** 2026-10-20 实测：单次任务里 4 条 `sleep 240` / `sleep 180` / `sleep 120` 白烧 11 分钟，占该任务 Bash 时间的 8%，而它们等的进程本来可以直接阻塞等完。
+
+| 场景 | 错误做法 | 正确做法 |
+|---|---|---|
+| 构建/测试要等结果 | `cargo test &` + `sleep 120` + `tail 日志` | 前台直接跑，命令返回即结果；超过 10 分钟才考虑后台 |
+| 必须后台的长任务 | `sleep 240 && tasklist \| grep cargo` | 轮询**目标条件**（进程退出 / 日志出现完成标记），间隔 ≤3s、设最大轮询次数，超时即报失败 |
+| 等外部状态变化 | 固定 sleep 后单次断言 | `until <条件>; do sleep 1; done` 并带次数上限 |
+| 启动 GUI 应用等待就绪 | `sleep 10` 后检查 | 每秒轮询到稳态再断言（见「桌面应用冒烟」） |
+
+- **单条命令里的 sleep 一律 ≤5s**；需要更长的等待说明命令该放到后台或该改写。
+- 判断「等待中」不要靠猜时长：先看命令本身是否能阻塞到完成（`cargo`、`npm run build`、`pytest` 都能），能就直接跑。
+- 后台任务的 `cargo ... | tail` 管道会假死（进程已亡但任务仍显示 running）——改用**日志落盘**，读文件而不是读管道。
+
+### 构建命令频率（`cargo test` 是大头，不是编译慢）
+
+2026-10-20 实测单任务内命令分类：
+
+| 类别 | 次数 | 总耗时 | 均值 |
+|---|---|---|---|
+| `cargo test` | **46** | **45.9 分钟** | 60s |
+| `sleep` | 17 | 21.8 分钟 | 77s |
+| `cargo check` | 16 | 7.0 分钟 | 26s |
+| `npm run test` | 4 | 2.3 分钟 | 34s |
+
+**问题不是编译慢，是全量测试跑太多次（46 次）。**增量 `cargo check` 只要 26-28s，本身不慢；sccache / cargo-watch 对此类增量重编（源文件已变，缓存不命中）没有收益。
+
+> 实测：一次 `cargo test` 总耗时 135 秒，其中测试执行只有 **1.97 秒**，98% 花在编译 crate 和链接 test 二进制上。所以中间验证用 `cargo check`（28s）而不是 `cargo test`（135s），**单次省 5 倍**。
+
+- 改完代码先跑 `cargo check`（26s）确认能编译。
+- 需要测试时**只跑受影响的模块**：`cargo test --lib <module>` / `cargo test <测试函数名>`。
+- **全量 `cargo test` 只在门禁收尾跑一次**，不要每改一个文件跑一遍。
+- AI 打标的两个真实模型测试（`loads_int8_vision_model_when_provided`、`runs_int8_inference_when_provided`）已标记 `#[ignore]`，默认 56 passed / 2 ignored。需要验证推理链路时才显式执行 `CLIP_TEST_MODEL=<path> cargo test -- --ignored`，**一次确认即可，不要反复跑**（每次 2-3 分钟）。
+- 前端同理：`npm run test` 支持 `npm run test -- <文件路径>` 只跑相关用例。
+
+---
+
 ## 测试（实际模式出自 `App.test.tsx`、`tauri-runtime.test.ts`）
 
 - 测试与被测物同目录：`*.test.tsx` / `*.test.ts`。

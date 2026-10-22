@@ -653,7 +653,11 @@ mod tests {
 
     /// 选型实测（需真实模型文件，环境变量提供路径；无文件时跳过）：
     /// 验证 int8 ONNX 能被 ort 加载，输入 [1,3,224,224] → 输出 [1,512]。
+    ///
+    /// 默认忽略：每次约 2-3 分钟。需要时显式执行
+    /// `CLIP_TEST_MODEL=<path> cargo test -- --ignored loads_int8_vision_model_when_provided`
     #[test]
+    #[ignore = "需真实 CLIP 模型，人工显式触发"]
     fn loads_int8_vision_model_when_provided() {
         let Ok(path) = std::env::var("CLIP_TEST_MODEL") else {
             eprintln!("跳过：未设置 CLIP_TEST_MODEL");
@@ -673,7 +677,11 @@ mod tests {
 
     /// 选型实测（需真实模型文件，环境变量提供路径；无文件时跳过）：
     /// 纯色图跑一轮完整推理，验证输出形状 [1,512] 且数值有限。
+    ///
+    /// 默认忽略：每次约 2-3 分钟。需要时显式执行
+    /// `CLIP_TEST_MODEL=<path> cargo test -- --ignored runs_int8_inference_when_provided`
     #[test]
+    #[ignore = "需真实 CLIP 模型，人工显式触发"]
     fn runs_int8_inference_when_provided() {
         let Ok(path) = std::env::var("CLIP_TEST_MODEL") else {
             eprintln!("跳过：未设置 CLIP_TEST_MODEL");
