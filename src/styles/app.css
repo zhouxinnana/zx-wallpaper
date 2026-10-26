@@ -134,6 +134,7 @@ select:hover, input:hover:not(:disabled) { border-color: rgba(192, 132, 252, .4)
 .skipped-card img { width: 100%; height: 85px; display: block; object-fit: cover; background: #171226; }
 .skipped-card > strong { display: block; overflow: hidden; padding: 6px 7px 5px; color: rgba(226, 220, 245, .75); font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .skipped-card > div { display: flex; gap: 4px; padding: 0 7px 7px; }
+.skipped-card-missing { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; height: 85px; color: rgba(226, 220, 245, .45); background: repeating-linear-gradient(45deg, rgba(255, 255, 255, .02) 0 8px, transparent 8px 16px); font-size: 11px; }
 
 .favorite-section { max-width: 1040px; padding-bottom: 24px; }
 .favorite-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }

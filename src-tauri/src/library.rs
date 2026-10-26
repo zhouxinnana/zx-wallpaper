@@ -147,6 +147,7 @@ pub async fn rescan_folders(
     let mut config = lock_config(&state)?.clone();
     prune_missing_online_images(&mut config);
     prune_missing_favorite_paths(&mut config);
+    prune_missing_skipped_paths(&mut config);
     let scan_config = config.clone();
     let scan = tauri::async_runtime::spawn_blocking(move || collect_candidates(&scan_config))
         .await
@@ -182,6 +183,7 @@ pub fn serve_image_asset(
 
 pub(crate) fn rescan_config(config: &mut AppConfig) {
     prune_missing_favorite_paths(config);
+    prune_missing_skipped_paths(config);
     let scan = collect_candidates(config);
     refresh_rotation_queue_for_config(config, &scan.candidates);
 }
@@ -213,6 +215,14 @@ pub(crate) fn collect_candidates(config: &AppConfig) -> LibraryScan {
 
 fn prune_missing_favorite_paths(config: &mut AppConfig) {
     config.favorite_paths.retain(|path| {
+        let path = Path::new(path);
+        path.is_file() && is_supported_wallpaper(path)
+    });
+}
+
+/// 清理指向已不存在文件的跳过记录，避免「已跳过」列表残留无法显示的死路径。
+fn prune_missing_skipped_paths(config: &mut AppConfig) {
+    config.skipped_paths.retain(|path| {
         let path = Path::new(path);
         path.is_file() && is_supported_wallpaper(path)
     });

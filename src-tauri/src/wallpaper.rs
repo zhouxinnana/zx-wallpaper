@@ -7,11 +7,12 @@ use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use crate::domain::{is_supported_wallpaper, same_path, take_next_path};
 use crate::online::{now_rfc3339, remember_excluded_urls};
 use crate::preferences::normalize_rotation_order;
-use crate::library::rescan_config;
+use crate::library::{collect_candidates, rescan_config};
 use crate::state::{
-    lock_config, lock_registered_shortcut, lock_registered_skip_shortcut, lock_shortcut_status,
-    lock_skip_shortcut_status, mutate, mutate_with_cached_scan, mutate_without_rescan,
-    AppConfig, AppState, ConfigPatch, RuntimeState, ShortcutStatus,
+    commit_scanned_state, get_state, lock_config, lock_registered_shortcut,
+    lock_registered_skip_shortcut, lock_shortcut_status, lock_skip_shortcut_status, mutate,
+    mutate_with_cached_scan, mutate_without_rescan, AppConfig, AppState, ConfigPatch,
+    RuntimeState, ShortcutStatus,
 };
 use crate::system::{
     replace_global_shortcut, skip_current_wallpaper_from_system, synchronize_autostart,
@@ -151,30 +152,64 @@ pub fn restore_all_skipped(
 }
 
 #[tauri::command]
-pub fn delete_skipped(
+pub async fn delete_skipped(
     app: AppHandle,
     state: State<'_, RuntimeState>,
     file_path: String,
 ) -> Result<AppState, String> {
-    let delete_path = file_path.clone();
-    let snapshot = mutate(&app, &state, move |config| {
-        delete_skipped_file(config, &file_path)
-    })?;
-    state.image_assets.purge_source(&delete_path);
+    let mut next_config = lock_config(&state)?.clone();
+    if !next_config
+        .skipped_paths
+        .iter()
+        .any(|path| same_path(path, &file_path))
+    {
+        return get_state(app, state);
+    }
+    // 文件删除与全库扫描放进阻塞线程池，避免卡住命令线程。
+    let path_to_delete = file_path.clone();
+    let (next_config, scan) = tauri::async_runtime::spawn_blocking(move || {
+        delete_skipped_file_with(&mut next_config, &path_to_delete, remove_file_to_trash)?;
+        let scan = collect_candidates(&next_config);
+        Ok::<_, String>((next_config, scan))
+    })
+    .await
+    .map_err(|error| format!("删除已跳过图片任务中断: {error}"))??;
+    let snapshot = commit_scanned_state(&app, &state, next_config, scan)?;
+    state.image_assets.purge_source(&file_path);
     Ok(snapshot)
 }
 
 #[tauri::command]
-pub fn delete_all_skipped(
+pub async fn delete_all_skipped(
     app: AppHandle,
     state: State<'_, RuntimeState>,
 ) -> Result<AppState, String> {
-    let paths = lock_config(&state)?.skipped_paths.clone();
-    let snapshot = mutate(&app, &state, |config| delete_all_skipped_files(config))?;
-    for path in paths {
-        state.image_assets.purge_source(&path);
+    let mut next_config = lock_config(&state)?.clone();
+    let attempted = next_config.skipped_paths.clone();
+    // 文件删除与全库扫描都放进阻塞线程池：不再阻塞主线程，也不再逐张重扫。
+    let (next_config, scan, failed) = tauri::async_runtime::spawn_blocking(move || {
+        let failed = delete_all_skipped_files_with(&mut next_config, remove_file_to_trash);
+        let scan = collect_candidates(&next_config);
+        (next_config, scan, failed)
+    })
+    .await
+    .map_err(|error| format!("删除已跳过图片任务中断: {error}"))?;
+    let purged: Vec<String> = attempted
+        .into_iter()
+        .filter(|path| !failed.iter().any(|failed_path| same_path(failed_path, path)))
+        .collect();
+    state.image_assets.purge_sources(&purged);
+    let snapshot = commit_scanned_state(&app, &state, next_config, scan)?;
+    if failed.is_empty() {
+        Ok(snapshot)
+    } else {
+        // 部分失败：状态已提交（成功的已移出列表并进回收站），失败项保留记录并报告。
+        Err(format!(
+            "已将 {} 张图片移入回收站，另有 {} 张删除失败（文件可能被占用），已保留其跳过记录。",
+            purged.len(),
+            failed.len()
+        ))
     }
-    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -529,8 +564,25 @@ fn remove_file_to_trash(file_path: &str) -> std::io::Result<()> {
     trash::delete(file_path).map_err(|error| std::io::Error::other(error.to_string()))
 }
 
-fn delete_skipped_file(config: &mut AppConfig, file_path: &str) -> Result<(), String> {
-    delete_skipped_file_with(config, file_path, remove_file_to_trash)
+/// 只清记录不动磁盘：从跳过/喜欢/在线图记录中移除该路径，并记住在线图黑名单。
+fn remove_skipped_records(config: &mut AppConfig, file_path: &str) {
+    // 删除即拉黑：跳过列表里的在线图被删时同样要记住源 URL。
+    let excluded: Vec<String> = config
+        .online_images
+        .iter()
+        .filter(|image| same_path(&image.local_path, file_path))
+        .map(|image| image.image_url.clone())
+        .collect();
+    remember_excluded_urls(config, excluded);
+    config
+        .skipped_paths
+        .retain(|path| !same_path(path, file_path));
+    config
+        .favorite_paths
+        .retain(|path| !same_path(path, file_path));
+    config
+        .online_images
+        .retain(|image| !same_path(&image.local_path, file_path));
 }
 
 fn delete_skipped_file_with(
@@ -550,40 +602,33 @@ fn delete_skipped_file_with(
             return Err(format!("无法删除已跳过图片: {error}"));
         }
     }
-    // 删除即拉黑：跳过列表里的在线图被删时同样要记住源 URL。
-    let excluded: Vec<String> = config
-        .online_images
-        .iter()
-        .filter(|image| same_path(&image.local_path, file_path))
-        .map(|image| image.image_url.clone())
-        .collect();
-    remember_excluded_urls(config, excluded);
-    config
-        .skipped_paths
-        .retain(|path| !same_path(path, file_path));
-    config
-        .favorite_paths
-        .retain(|path| !same_path(path, file_path));
-    config
-        .online_images
-        .retain(|image| !same_path(&image.local_path, file_path));
-    rescan_config(config);
+    remove_skipped_records(config, file_path);
     Ok(())
 }
 
-fn delete_all_skipped_files(config: &mut AppConfig) -> Result<(), String> {
-    delete_all_skipped_files_with(config, remove_file_to_trash)
-}
-
+/// 尽力而为地删除全部已跳过图片：单张失败不中断整批，失败项保留记录并返回。
+/// 不在循环内重扫图库——重扫由调用方（mutate/commit_scanned_state）统一做一次。
 fn delete_all_skipped_files_with(
     config: &mut AppConfig,
     remove_file: impl Fn(&str) -> std::io::Result<()> + Copy,
-) -> Result<(), String> {
+) -> Vec<String> {
     let paths = config.skipped_paths.clone();
+    let mut failed = Vec::new();
     for path in paths {
-        delete_skipped_file_with(config, &path, remove_file)?;
+        if !config
+            .skipped_paths
+            .iter()
+            .any(|skipped| same_path(skipped, &path))
+        {
+            continue;
+        }
+        if Path::new(&path).exists() && remove_file(&path).is_err() {
+            failed.push(path);
+            continue;
+        }
+        remove_skipped_records(config, &path);
     }
-    Ok(())
+    failed
 }
 
 pub(crate) fn skip_current_wallpaper_config(config: &mut AppConfig) -> Result<(), String> {
@@ -839,7 +884,7 @@ mod tests {
     use super::{
         batch_favorite_config, batch_restore_skipped_config, batch_skip_paths_config,
         clamp_interval_minutes, delete_all_skipped_files_with, delete_batch_with,
-        delete_skipped_file, delete_skipped_file_with, is_switch_due, record_wallpaper_history,
+        delete_skipped_file_with, is_switch_due, record_wallpaper_history,
         toggle_favorite_path, wallpaper_style_values, MAX_INTERVAL_MINUTES, MIN_INTERVAL_MINUTES,
         WALLPAPER_HISTORY_LIMIT,
     };
@@ -910,7 +955,8 @@ mod tests {
             ..AppConfig::default()
         };
 
-        delete_all_skipped_files_with(&mut config, |path| fs::remove_file(path)).unwrap();
+        let failed = delete_all_skipped_files_with(&mut config, |path| fs::remove_file(path));
+        assert!(failed.is_empty());
 
         assert!(paths.iter().all(|path| !Path::new(path).exists()));
         assert!(config.skipped_paths.is_empty());
@@ -928,9 +974,43 @@ mod tests {
             ..AppConfig::default()
         };
 
-        delete_skipped_file(&mut config, &path).unwrap();
+        delete_skipped_file_with(&mut config, &path, |_| {
+            panic!("trash must not be called for missing files")
+        })
+        .unwrap();
 
         assert!(config.skipped_paths.is_empty());
+    }
+
+    #[test]
+    fn delete_all_skipped_keeps_records_for_files_that_fail_to_delete() {
+        use crate::domain::same_path;
+        let ok_path = std::env::temp_dir().join(format!("zx-wallpaper-ok-{}.jpg", Uuid::new_v4()));
+        let stuck_path =
+            std::env::temp_dir().join(format!("zx-wallpaper-stuck-{}.jpg", Uuid::new_v4()));
+        fs::write(&ok_path, b"test wallpaper").unwrap();
+        fs::write(&stuck_path, b"test wallpaper").unwrap();
+        let ok_path = ok_path.to_string_lossy().into_owned();
+        let stuck_path = stuck_path.to_string_lossy().into_owned();
+        let mut config = AppConfig {
+            skipped_paths: vec![ok_path.clone(), stuck_path.clone()],
+            favorite_paths: vec![stuck_path.clone()],
+            ..AppConfig::default()
+        };
+
+        let failed = delete_all_skipped_files_with(&mut config, |path| {
+            if same_path(path, &stuck_path) {
+                Err(std::io::Error::other("locked"))
+            } else {
+                fs::remove_file(path)
+            }
+        });
+
+        assert_eq!(failed, vec![stuck_path.clone()]);
+        assert_eq!(config.skipped_paths, vec![stuck_path.clone()]);
+        assert_eq!(config.favorite_paths, vec![stuck_path.clone()]);
+        assert!(!Path::new(&ok_path).exists());
+        let _ = fs::remove_file(&stuck_path);
     }
 
     #[test]

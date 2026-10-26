@@ -133,6 +133,35 @@ impl ImageAssetManager {
         }
     }
 
+    /// 批量清除多个源文件对应的缓存文件与注册记录（单次遍历缓存目录，替代逐个 `purge_source`）。
+    pub fn purge_sources(&self, file_paths: &[String]) {
+        if file_paths.is_empty() {
+            return;
+        }
+        let prefixes: Vec<String> = file_paths
+            .iter()
+            .map(|path| format!("{}-", source_key(Path::new(path))))
+            .collect();
+        if let Ok(entries) = fs::read_dir(&self.cache_directory) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if prefixes
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix.as_str()))
+                {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+        if let Ok(mut assets) = self.registered_assets.lock() {
+            assets.retain(|_, asset| {
+                !file_paths
+                    .iter()
+                    .any(|path| same_path(&asset.path, Path::new(path)))
+            });
+        }
+    }
+
     pub fn serve(&self, request_path: &str) -> tauri::http::Response<Vec<u8>> {
         let key = request_path.trim_start_matches('/');
         let asset = self

@@ -9,6 +9,7 @@ import {
   FolderOpen,
   Heart,
   Image as ImageIcon,
+  ImageOff,
   Images,
   Keyboard,
   LayoutDashboard,
@@ -438,7 +439,7 @@ function WorkbenchView({
       <section className="content-section skipped-section">
         <SectionHeading title={<>已跳过图片 {state.skippedPaths.length > 0 && <b>({state.skippedPaths.length})</b>}</>} action={state.skippedPaths.length ? <div className="section-actions"><input className="section-filter-input" type="search" aria-label="筛选已跳过图片" placeholder="按文件名筛选" value={skippedFilter} onChange={(event) => setSkippedFilter(event.target.value)} /><button className="action-button is-small" type="button" onClick={() => void run("restore-all", () => api.restoreAllSkipped())}>全部恢复</button><button className="action-button is-small is-danger" type="button" disabled={busy !== null} onClick={() => openConfirm({ title: "删除全部已跳过图片", description: `将把 ${state.skippedPaths.length} 张图片从磁盘删除并移入系统回收站，同时移除其喜欢记录。回收站中的文件仍可手动还原。`, confirmLabel: "全部删除", busyKey: "delete-all-skipped", action: () => api.deleteAllSkipped() })}>全部删除</button></div> : undefined} />
         {state.skippedPaths.length === 0 ? <EmptyState text="暂无跳过的图片" /> : skippedPaths.length === 0 ? <EmptyState text="没有匹配的图片" /> : <div className="skipped-grid">
-          {skippedPaths.map((path) => <SkippedCard key={path} path={path} previewUrl={state.previewUrl ?? previewImage} api={api} run={run} onOpenViewer={onOpenViewer} />)}
+          {skippedPaths.map((path) => <SkippedCard key={path} path={path} api={api} run={run} onOpenViewer={onOpenViewer} />)}
         </div>}
       </section>
     </div>
@@ -512,13 +513,14 @@ function HistoryCard({ path, api, busy, run }: { path: string; api: DesktopRunti
   </button>;
 }
 
-function SkippedCard({ path, previewUrl, api, run, onOpenViewer }: { path: string; previewUrl: string; api: DesktopRuntime; run: (key: string, action: () => Promise<unknown>) => Promise<void>; onOpenViewer: (filePath: string) => void }) {
-  const [thumbnail, setThumbnail] = useState(previewUrl);
-  useEffect(() => { let active = true; void api.getImageAsset(path, "grid").then((asset) => { if (active && asset) setThumbnail(asset.src); }); return () => { active = false; }; }, [api, path]);
-  return <article className="skipped-card">
-    <img src={thumbnail} alt="" loading="lazy" decoding="async" />
+function SkippedCard({ path, api, run, onOpenViewer }: { path: string; api: DesktopRuntime; run: (key: string, action: () => Promise<unknown>) => Promise<void>; onOpenViewer: (filePath: string) => void }) {
+  /** undefined = 加载中；null = 文件已不存在（后端对缺失文件返回空资源）；有值 = 正常缩略图。 */
+  const [thumbnail, setThumbnail] = useState<string | null | undefined>(undefined);
+  useEffect(() => { let active = true; void api.getImageAsset(path, "grid").then((asset) => { if (active) setThumbnail(asset?.src ?? null); }).catch(() => { if (active) setThumbnail(null); }); return () => { active = false; }; }, [api, path]);
+  return <article className={thumbnail === null ? "skipped-card is-missing" : "skipped-card"}>
+    {thumbnail === undefined ? <div className="skipped-card-missing" aria-hidden="true" /> : thumbnail === null ? <div className="skipped-card-missing"><ImageOff size={18} /><span>文件已不存在</span></div> : <img src={thumbnail} alt="" loading="lazy" decoding="async" />}
     <strong title={pathName(path)}>{pathName(path)}</strong>
-    <div><button className="action-button is-small" type="button" onClick={() => void run(`restore-${path}`, () => api.restoreSkippedPath(path))}>恢复</button><button className="icon-button" type="button" aria-label={`查看原图 ${pathName(path)}`} title="查看原图" onClick={() => onOpenViewer(path)}><Maximize2 size={14} /></button></div>
+    <div><button className="action-button is-small" type="button" onClick={() => void run(`restore-${path}`, () => api.restoreSkippedPath(path))}>恢复</button>{thumbnail !== null && <button className="icon-button" type="button" aria-label={`查看原图 ${pathName(path)}`} title="查看原图" onClick={() => onOpenViewer(path)}><Maximize2 size={14} /></button>}</div>
   </article>;
 }
 
