@@ -1,6 +1,6 @@
 [package]
 name = "zx-wallpaper"
-version = "0.2.0"
+version = "0.2.1"
 description = "Windows local-first wallpaper manager"
 authors = ["ZX Wallpaper"]
 edition = "2021"
