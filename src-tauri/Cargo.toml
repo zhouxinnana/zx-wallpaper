@@ -40,7 +40,9 @@ desktop = [
   "dep:tauri-plugin-autostart",
   "dep:tauri-plugin-dialog",
   "dep:tauri-plugin-global-shortcut",
-  "dep:tauri-plugin-opener"
+  "dep:tauri-plugin-opener",
+  "dep:tauri-plugin-process",
+  "dep:tauri-plugin-updater"
 ]
 
 [build-dependencies]
@@ -63,6 +65,9 @@ tauri-plugin-autostart = { version = "2.5.1", optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 tauri-plugin-global-shortcut = { version = "2.3.2", optional = true }
 tauri-plugin-opener = { version = "2", optional = true }
+tauri-plugin-process = { version = "2", optional = true }
+# 自动更新：读取 GitHub Releases 的 latest.json，验签后交给 NSIS 静默安装。
+tauri-plugin-updater = { version = "2", optional = true }
 thiserror = { version = "2", optional = true }
 time = { version = "0.3", features = ["formatting"], optional = true }
 tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"], optional = true }

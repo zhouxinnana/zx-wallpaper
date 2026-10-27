@@ -41,6 +41,15 @@ npm run tauri:build
 
 安装包产物位于 `src-tauri/target/release/bundle/`，该目录不会提交到 Git。
 
+`bundle.createUpdaterArtifacts` 已开启，打包会额外产出 `.nsis.zip` 和 `.sig`。**签名是强制的**：`plugins.updater.pubkey` 已配置时，缺少私钥会让 `tauri build` 直接失败（`A public key has been found, but no private key`），所以本地打包前必须指向私钥：
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY_PATH = "$HOME\.tauri\zx-wallpaper.key"
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+```
+
+私钥在 `~/.tauri/zx-wallpaper.key`（每台开发机各自一份即可，客户端只认公钥）。只跑前端 `npm run build` / `npm run tauri:dev` 不受影响。
+
 ## 发布
 
 版本号真源是 `package.json`：`tauri.conf.json` 通过 `"version": "../package.json"` 引用它，`Cargo.toml` / `Cargo.lock` 由脚本同步。
@@ -56,7 +65,23 @@ git tag "tauri-v$version"
 git push origin "tauri-v$version"
 ```
 
-推送 `tauri-vX.Y.Z` 标签后，GitHub Actions 会在 Windows 环境打包，并把 NSIS 安装器附加到 GitHub Release。标签名必须与 `package.json` 版本严格一致，且提交必须可达 `tauri_master`（workflow 会校验这两条）。
+推送 `tauri-vX.Y.Z` 标签后，GitHub Actions 会在 Windows 环境打包（`tauri-apps/tauri-action`），把 NSIS 安装器、`.nsis.zip`、`.sig` 与 `latest.json` 一起附加到 GitHub Release。标签名必须与 `package.json` 版本严格一致，且提交必须可达 `tauri_master`（workflow 会校验这两条）。
+
+### 自动更新的密钥约定
+
+客户端固化的更新地址是 `releases/latest/download/latest.json`，因此发布必须是**已发布且非 prerelease** 的 release，否则客户端会拿到 404。
+
+密钥对只生成一次，之后所有版本沿用：
+
+```powershell
+npm run tauri signer generate -- -w "$HOME/.tauri/zx-wallpaper.key"
+```
+
+- 公钥：写入 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`
+- 私钥：只放在 GitHub Secrets 的 `TAURI_SIGNING_PRIVATE_KEY`，另需离线备份
+- **私钥或密码丢失 = 再也无法给已安装用户推送更新**（旧客户端验签必然失败），只能让用户手动重装
+
+首个带 updater 的版本发布时，老用户（≤ 0.2.2）必须手动安装一次，之后才能进入自动更新通道。
 
 ## 技术栈
 

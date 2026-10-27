@@ -298,6 +298,54 @@ describe("ZX Wallpaper application shell", () => {
     expect(updateConfig).toHaveBeenCalledWith({ rotationOrder: "sequential" });
   });
 
+  it("reports the installed build as latest when the manifest has no newer version", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const checkUpdate = vi.fn(() => Promise.resolve(null));
+    runtime.checkUpdate = checkUpdate;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "检查更新" }));
+
+    expect(checkUpdate).toHaveBeenCalledOnce();
+    expect(await screen.findByText("已是最新版本。")).toBeTruthy();
+  });
+
+  it("announces a failing update check without claiming the build is current", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    runtime.checkUpdate = vi.fn(() => Promise.reject(new Error("offline")));
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "检查更新" }));
+
+    expect(await screen.findByText(/检查更新失败/)).toBeTruthy();
+    expect(screen.queryByText("已是最新版本。")).toBeNull();
+  });
+
+  it("only installs a discovered update after the user confirms", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    runtime.checkUpdate = vi.fn(() => Promise.resolve({ version: "0.3.0", currentVersion: "0.2.2", notes: null, date: null }));
+    const installUpdate = vi.fn(() => Promise.resolve());
+    runtime.installUpdate = installUpdate;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "检查更新" }));
+
+    expect(await screen.findByText(/发现新版本 v0\.3\.0/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "立即更新" }));
+
+    expect(await screen.findByRole("alertdialog", { name: "更新到 v0.3.0" })).toBeTruthy();
+    expect(installUpdate).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "下载并安装" }));
+    expect(installUpdate).toHaveBeenCalledOnce();
+  });
+
   it("persists the requested skip shortcut from settings", async () => {
     const user = userEvent.setup();
     const runtime = createOnlineGalleryRuntime(0);
@@ -868,6 +916,8 @@ function createOnlineGalleryRuntime(
     getTaggingStatus: () => Promise.resolve(tagging.status ?? { enabled: state.taggingEnabled, modelReady: false, downloading: null, pending: 0 }),
     rescanTags: unchanged,
     onStateChanged: () => Promise.resolve(() => {}),
+    checkUpdate: () => Promise.resolve(null),
+    installUpdate: () => Promise.resolve(),
   };
 }
 

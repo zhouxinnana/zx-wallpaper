@@ -182,12 +182,29 @@ export interface AppState extends AppConfig {
   skipShortcutStatus: ShortcutStatus;
 }
 
+/** 更新清单里与 UI 相关的字段（后端 `Update` 句柄的投影，不跨进程传递）。 */
+export interface AppUpdateInfo {
+  /** 远端发布的新版本号，如 0.3.0。 */
+  version: string;
+  /** 当前运行版本号。 */
+  currentVersion: string;
+  /** Release notes；发布未填时为 null。 */
+  notes: string | null;
+  /** 发布时间（RFC 3339）；清单未提供时为 null。 */
+  date: string | null;
+}
+
+/** 安装包下载进度：`total` 为 null 表示服务端未给 Content-Length。 */
+export interface AppUpdateProgress {
+  downloaded: number;
+  total: number | null;
+}
+
 export interface DesktopRuntime {
   getState(): Promise<AppState>;
   updateConfig(patch: Partial<AppConfig>): Promise<AppState>;
   addFolder(): Promise<AppState>;
-  removeFolder(folderId: string): Promise<AppState>;
-  updateFolder(folder: WallpaperFolder): Promise<AppState>;
+  removeFolder(folderId: string): Promise<AppState>;  updateFolder(folder: WallpaperFolder): Promise<AppState>;
   openFolder(folderId: string): Promise<AppState>;
   rescanFolders(): Promise<AppState>;
   nextWallpaper(): Promise<AppState>;
@@ -221,4 +238,8 @@ export interface DesktopRuntime {
   getTaggingStatus(): Promise<TaggingStatus>;
   rescanTags(): Promise<AppState>;
   onStateChanged(listener: (state: AppState) => void): Promise<() => void>;
+  /** 检查更新；无更新或非桌面环境返回 null。联网失败时抛错，由调用方决定是否展示。 */
+  checkUpdate(): Promise<AppUpdateInfo | null>;
+  /** 下载并安装已检查到的更新。Windows 上安装器会自行退出并重启应用。 */
+  installUpdate(onProgress?: (progress: AppUpdateProgress) => void): Promise<void>;
 }

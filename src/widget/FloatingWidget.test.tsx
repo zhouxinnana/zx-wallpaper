@@ -193,5 +193,7 @@ function createWidgetRuntime(state: AppState): DesktopRuntime {
     getTaggingStatus: () => Promise.resolve({ enabled: false, modelReady: false, downloading: null, pending: 0 }),
     rescanTags: unchanged,
     onStateChanged: () => Promise.resolve(() => {}),
+    checkUpdate: () => Promise.resolve(null),
+    installUpdate: () => Promise.resolve(),
   };
 }

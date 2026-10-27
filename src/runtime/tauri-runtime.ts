@@ -1,8 +1,12 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen } from "@tauri-apps/api/event";
+import { relaunch as tauriRelaunch } from "@tauri-apps/plugin-process";
+import { check as tauriCheckUpdate } from "@tauri-apps/plugin-updater";
 import type {
   AppConfig,
   AppState,
+  AppUpdateInfo,
+  AppUpdateProgress,
   DesktopRuntime,
   OnlineSource,
   TaggingStatus,
@@ -17,12 +21,45 @@ type Listen = <T>(
   listener: (event: { payload: T }) => void,
 ) => Promise<Unlisten>;
 
+/** 更新插件的下载事件（与 `@tauri-apps/plugin-updater` 的 DownloadEvent 同形）。 */
+export type UpdaterDownloadEvent =
+  | { event: "Started"; data: { contentLength?: number } }
+  | { event: "Progress"; data: { chunkLength: number } }
+  | { event: "Finished" };
+
+/** `check()` 返回的待安装更新；只保留 runtime 需要的面，便于测试注入 fake。 */
+export interface PendingUpdateBinding {
+  version: string;
+  currentVersion: string;
+  date?: string;
+  body?: string;
+  downloadAndInstall(
+    onEvent: (event: UpdaterDownloadEvent) => void,
+  ): Promise<void>;
+}
+
+/** 更新能力的底层依赖。缺省时才走真实 Tauri 插件，测试可整体替换。 */
+export interface UpdaterBindings {
+  check(): Promise<PendingUpdateBinding | null>;
+  relaunch(): Promise<void>;
+}
+
+const defaultUpdater: UpdaterBindings = {
+  check: () => tauriCheckUpdate({ timeout: 15_000 }),
+  relaunch: () => tauriRelaunch(),
+};
+
 export interface TauriBindings {
   invoke: Invoke;
   listen: Listen;
+  /** 可选：更新依赖。不传则用真实插件。 */
+  updater?: UpdaterBindings;
 }
 
 export function createTauriRuntime(bindings: TauriBindings): DesktopRuntime {
+  const updater = bindings.updater ?? defaultUpdater;
+  /** 检查到的待安装更新：安装时复用，避免再发一次清单请求。 */
+  let pendingUpdate: PendingUpdateBinding | null = null;
   const command = <T>(name: string, args?: Record<string, unknown>) =>
     args === undefined
       ? bindings.invoke<T>(name)
@@ -72,6 +109,34 @@ export function createTauriRuntime(bindings: TauriBindings): DesktopRuntime {
       bindings.listen<AppState>("app://state-changed", ({ payload }) =>
         listener(payload),
       ),
+    checkUpdate: async (): Promise<AppUpdateInfo | null> => {
+      pendingUpdate = await updater.check();
+      if (!pendingUpdate) return null;
+      return {
+        version: pendingUpdate.version,
+        currentVersion: pendingUpdate.currentVersion,
+        notes: pendingUpdate.body ?? null,
+        date: pendingUpdate.date ?? null,
+      };
+    },
+    installUpdate: async (onProgress?: (progress: AppUpdateProgress) => void) => {
+      const update = pendingUpdate ?? (await updater.check());
+      if (!update) throw new Error("没有可安装的更新，请重新检查。");
+      let downloaded = 0;
+      let total: number | null = null;
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = event.data.contentLength ?? null;
+          onProgress?.({ downloaded, total });
+        } else if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+          onProgress?.({ downloaded, total });
+        }
+      });
+      pendingUpdate = null;
+      // Windows 上安装器启动后应用会自行退出（走不到这里）；其余平台靠这行重启。
+      await updater.relaunch();
+    },
   };
 }
 

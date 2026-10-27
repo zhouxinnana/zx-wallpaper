@@ -132,4 +132,65 @@ describe("Tauri runtime", () => {
     expect(listener).toHaveBeenCalledWith(state);
     expect(unlisten).toHaveBeenCalledOnce();
   });
+
+  it("maps the update manifest to the panel info and returns null when up to date", async () => {
+    const check = vi.fn().mockResolvedValue({
+      version: "0.3.0",
+      currentVersion: "0.2.2",
+      body: "修复浮窗高度",
+      date: "2026-10-27T00:00:00Z",
+      downloadAndInstall: vi.fn(),
+    });
+    const runtime = createTauriRuntime({ invoke: vi.fn(), listen: vi.fn(), updater: { check, relaunch: vi.fn() } });
+
+    await expect(runtime.checkUpdate()).resolves.toEqual({
+      version: "0.3.0",
+      currentVersion: "0.2.2",
+      notes: "修复浮窗高度",
+      date: "2026-10-27T00:00:00Z",
+    });
+
+    check.mockResolvedValue(null);
+    await expect(runtime.checkUpdate()).resolves.toBeNull();
+  });
+
+  it("aggregates download progress and relaunches after installing", async () => {
+    const downloadAndInstall = vi.fn(async (onEvent) => {
+      onEvent({ event: "Started", data: { contentLength: 300 } });
+      onEvent({ event: "Progress", data: { chunkLength: 100 } });
+      onEvent({ event: "Progress", data: { chunkLength: 200 } });
+      onEvent({ event: "Finished" });
+    });
+    const relaunch = vi.fn().mockResolvedValue(undefined);
+    const runtime = createTauriRuntime({
+      invoke: vi.fn(),
+      listen: vi.fn(),
+      updater: {
+        check: vi.fn().mockResolvedValue({ version: "0.3.0", currentVersion: "0.2.2", downloadAndInstall }),
+        relaunch,
+      },
+    });
+    const progress = vi.fn();
+
+    await runtime.checkUpdate();
+    await runtime.installUpdate(progress);
+
+    expect(downloadAndInstall).toHaveBeenCalledOnce();
+    expect(progress.mock.calls.map(([event]) => event)).toEqual([
+      { downloaded: 0, total: 300 },
+      { downloaded: 100, total: 300 },
+      { downloaded: 300, total: 300 },
+    ]);
+    expect(relaunch).toHaveBeenCalledOnce();
+  });
+
+  it("refuses to install when no update was found", async () => {
+    const runtime = createTauriRuntime({
+      invoke: vi.fn(),
+      listen: vi.fn(),
+      updater: { check: vi.fn().mockResolvedValue(null), relaunch: vi.fn() },
+    });
+
+    await expect(runtime.installUpdate()).rejects.toThrow("没有可安装的更新");
+  });
 });

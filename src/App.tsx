@@ -34,6 +34,8 @@ import {
 import type {
   AppConfig,
   AppState,
+  AppUpdateInfo,
+  AppUpdateProgress,
   DesktopRuntime,
   OnlineImage,
   OnlineSyncLog,
@@ -53,6 +55,9 @@ const previewImage =
 
 /** 应用版本号：与 package.json / tauri.conf.json 保持单一来源，发版自动跟随。 */
 const APP_VERSION = `v${packageVersion}`;
+
+/** 启动后自动检查更新的延迟：避开冷启动窗口与首屏 IPC 高峰。 */
+const AUTO_CHECK_DELAY_MS = 8000;
 
 /** 切换间隔的手动输入范围（分钟）：与后端 `update_preferences` 的钳制保持一致。 */
 const INTERVAL_MINUTES = { min: 1, max: 43_200 } as const;
@@ -94,6 +99,19 @@ type ConfirmOptions = {
   confirmLabel: string;
   busyKey: string;
   action: () => Promise<unknown>;
+};
+
+/** 设置页「更新」面板的状态与动作。 */
+type UpdatePanel = {
+  info: AppUpdateInfo | null;
+  checking: boolean;
+  installing: boolean;
+  /** 下载进度百分比；未知总大小时为 null。 */
+  progress: number | null;
+  /** 检查结果提示（已是最新版 / 失败原因）。 */
+  message: string | null;
+  onCheck: () => void;
+  onInstall: () => void;
 };
 
 const navigation: Array<{
@@ -217,7 +235,89 @@ export default function App({ runtime }: { runtime?: DesktopRuntime }) {
     if (options) await run(options.busyKey, options.action);
   }, [confirmOptions, run]);
 
+  const updateBusyRef = useRef(false);
+  const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+
+  const checkForUpdate = useCallback(async () => {
+    if (updateBusyRef.current) return;
+    updateBusyRef.current = true;
+    setUpdateChecking(true);
+    setUpdateMessage(null);
+    try {
+      const info = await api.checkUpdate();
+      setUpdateInfo(info);
+      setUpdateMessage(info ? null : "已是最新版本。");
+    } catch (cause) {
+      setUpdateInfo(null);
+      // 只透出自己抛的中文错误；底层网络错误的英文原文不外露。
+      const message = cause instanceof Error ? cause.message : "";
+      setUpdateMessage(/[\u4e00-\u9fa5]/.test(message) ? message : "检查更新失败，请确认网络可以访问 GitHub。");
+    } finally {
+      updateBusyRef.current = false;
+      setUpdateChecking(false);
+    }
+  }, [api]);
+
+  /** 启动后静默检查一次：失败保持沉默（离线或网络不可达不该每次开机都报错）。 */
+  useEffect(() => {
+    let active = true;
+    const timer = window.setTimeout(() => {
+      if (!active) return;
+      void api.checkUpdate().then(
+        (info) => {
+          if (active && info) setUpdateInfo(info);
+        },
+        () => {},
+      );
+    }, AUTO_CHECK_DELAY_MS);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [api]);
+
+  const installUpdate = useCallback(() => {
+    const info = updateInfo;
+    if (!info) return;
+    openConfirm({
+      title: `更新到 v${info.version}`,
+      description: "将下载签名安装包并自动重启应用，壁纸目录与偏好设置都会保留。",
+      confirmLabel: "下载并安装",
+      busyKey: "update-install",
+      action: async () => {
+        setUpdateInstalling(true);
+        setUpdateProgress(null);
+        try {
+          await api.installUpdate((progress: AppUpdateProgress) => {
+            setUpdateProgress(
+              progress.total && progress.total > 0
+                ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100))
+                : null,
+            );
+          });
+          setUpdateMessage("安装完成，应用即将重启。");
+        } finally {
+          setUpdateInstalling(false);
+        }
+      },
+    });
+  }, [api, openConfirm, updateInfo]);
+
   if (!state) return <LoadingScreen />;
+
+  const updatePanel: UpdatePanel = {
+    info: updateInfo,
+    checking: updateChecking,
+    installing: updateInstalling,
+    progress: updateProgress,
+    message: updateMessage,
+    onCheck: () => void checkForUpdate(),
+    onInstall: installUpdate,
+  };
 
   const activeNavigation = navigation.find((item) => item.key === view)!;
   const content = {
@@ -225,7 +325,7 @@ export default function App({ runtime }: { runtime?: DesktopRuntime }) {
     gallery: <GalleryView api={api} state={state} busy={busy} run={run} updateConfig={updateConfig} onOpenViewer={openViewer} openConfirm={openConfirm} source={gallerySource} onSourceChange={setGallerySource} />,
     favorites: <FavoritesView api={api} state={state} busy={busy} run={run} onOpenViewer={openViewer} />,
     lab: <LabView />,
-    settings: <SettingsView state={state} api={api} busy={busy} run={run} updateConfig={updateConfig} />,
+    settings: <SettingsView state={state} api={api} busy={busy} run={run} updateConfig={updateConfig} update={updatePanel} />,
   }[view];
   const viewerFileDelete = viewerPath && state.skippedPaths.some((path) => samePath(path, viewerPath)) ? {
     fileName: pathName(viewerPath),
@@ -277,7 +377,7 @@ export default function App({ runtime }: { runtime?: DesktopRuntime }) {
           <div className="sidebar-runtime">
             <span className={state.paused ? "runtime-dot is-paused" : "runtime-dot"} />
             <span>{state.paused ? "已暂停" : "后台运行中"}</span>
-            <small>ZX Wallpaper · {APP_VERSION}</small>
+            <small>ZX Wallpaper · {APP_VERSION}{updateInfo ? ` · 有新版本 v${updateInfo.version}` : ""}</small>
           </div>
         </aside>
         <main className="prototype-main">
@@ -969,7 +1069,7 @@ function GalleryCard({ item, folderName, category, isCurrent, isSkipped, isFavor
   </article>;
 }
 
-function SettingsView({ state, api, busy, run, updateConfig }: { state: AppState; api: DesktopRuntime; busy: string | null; run: (key: string, action: () => Promise<unknown>) => Promise<void>; updateConfig: (patch: Partial<AppConfig>) => void }) {
+function SettingsView({ state, api, busy, run, updateConfig, update }: { state: AppState; api: DesktopRuntime; busy: string | null; run: (key: string, action: () => Promise<unknown>) => Promise<void>; updateConfig: (patch: Partial<AppConfig>) => void; update: UpdatePanel }) {
   const [nextShortcut, setNextShortcut] = useState(state.globalNextShortcut ?? "");
   const [skipShortcut, setSkipShortcut] = useState(state.globalSkipShortcut ?? "");
   useEffect(() => setNextShortcut(state.globalNextShortcut ?? ""), [state.globalNextShortcut]);
@@ -992,7 +1092,7 @@ function SettingsView({ state, api, busy, run, updateConfig }: { state: AppState
     <SettingsPanel title="系统集成"><SettingsRow label="开机自动启动" description="仅在系统托盘运行，不显示主窗口"><Toggle label="开机自动启动" checked={state.autoStart} onChange={(autoStart) => updateConfig({ autoStart })} /></SettingsRow><SettingsRow label="跟随系统主题" description="深色 / 浅色主题切换时同步调整"><Toggle label="跟随系统主题" checked={state.followSystemTheme} onChange={(followSystemTheme) => updateConfig({ followSystemTheme })} /></SettingsRow><SettingsRow label="关闭窗口时隐藏到托盘" description="关闭后继续在后台运行"><Toggle label="关闭窗口时隐藏到托盘" checked={state.hideToTrayOnClose} onChange={(hideToTrayOnClose) => updateConfig({ hideToTrayOnClose })} /></SettingsRow></SettingsPanel>
     <TaggingSettings state={state} api={api} busy={busy} run={run} />
     <SettingsPanel title="全局快捷键"><SettingsRow label="下一张壁纸" description="保存时立即尝试注册"><div className="shortcut-editor"><input aria-label="全局下一张快捷键" placeholder="例如 Ctrl+Alt+N" value={nextShortcut} onChange={(event) => setNextShortcut(event.target.value)} onBlur={saveNextShortcut} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><ShortcutStatusTag status={state.shortcutStatus} /></div></SettingsRow><SettingsRow label="跳过此图" description="保存时立即尝试注册"><div className="shortcut-editor"><input aria-label="全局跳过快捷键" placeholder="例如 Ctrl+Alt+S" value={skipShortcut} onChange={(event) => setSkipShortcut(event.target.value)} onBlur={saveSkipShortcut} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><ShortcutStatusTag status={state.skipShortcutStatus} /></div></SettingsRow></SettingsPanel>
-    <SettingsPanel title="更新"><SettingsRow label="当前版本" description="手动检查并由用户确认下载"><span className="settings-version">{APP_VERSION}</span></SettingsRow><SettingsRow label="检查更新" description="当前发布未配置签名更新清单"><button className="action-button is-small" type="button" disabled title="需要签名私钥和更新地址">检查更新</button></SettingsRow></SettingsPanel>
+    <SettingsPanel title="更新"><SettingsRow label="当前版本" description="检查后由你确认是否下载安装"><span className="settings-version">{APP_VERSION}</span></SettingsRow><SettingsRow label="检查更新" description={update.message ?? (update.info ? `发现新版本 v${update.info.version}` : "从 GitHub Releases 获取最新发布")}><button className="action-button is-small" type="button" onClick={update.onCheck} disabled={update.checking || update.installing}>{update.checking ? "检查中…" : "检查更新"}</button></SettingsRow>{update.info ? <SettingsRow label={`新版本 v${update.info.version}`} description={update.installing ? (update.progress === null ? "正在下载安装包" : `正在下载 ${update.progress}%`) : "下载完成后自动重启，设置与壁纸目录保留"}><button className="action-button is-small" type="button" onClick={update.onInstall} disabled={update.installing}>{update.installing ? "安装中…" : "立即更新"}</button></SettingsRow> : null}</SettingsPanel>
   </div>;
 }
 
@@ -1173,6 +1273,9 @@ function createBrowserPreviewApi(): DesktopRuntime {
     getTaggingStatus: () => Promise.resolve({ enabled: state.taggingEnabled, modelReady: false, downloading: null, pending: 0 }),
     rescanTags: () => Promise.resolve(state),
     onStateChanged: (listener) => { listeners.add(listener); return Promise.resolve(() => listeners.delete(listener)); },
+    // 浏览器预览无 Tauri 环境：更新能力整体不可用，给出明确中文提示而不是假装「已是最新」。
+    checkUpdate: () => Promise.reject(new Error("当前环境不支持自动更新。")),
+    installUpdate: () => Promise.reject(new Error("当前环境不支持自动更新。")),
   };
 }
 
@@ -1203,6 +1306,7 @@ function operationMessage(key: string, phase: "pending" | "success") {
   if (key.startsWith("run-")) return pending ? "正在抓取在线来源，下载原图可能需要一些时间..." : "在线来源抓取已完成，请查看发现和下载数量。";
   if (key === "refresh-gallery" || key === "refresh-online") return pending ? "正在刷新图库..." : "图库已刷新。";
   if (key.startsWith("tagging-")) return pending ? "正在更新智能分类设置..." : "智能分类设置已更新。";
+  if (key === "update-install") return pending ? "正在下载并安装更新，请勿关闭应用..." : "更新已安装，应用即将重启。";
   return pending ? "正在处理..." : "操作已完成。";
 }
 function operationError(cause: unknown) {

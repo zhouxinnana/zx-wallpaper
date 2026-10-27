@@ -143,3 +143,17 @@ cargo test          # 在 src-tauri/ 目录下运行
 
 - `ort` 的 Windows 预编译包只带 DirectML 档，`copy-dylibs` 可能把 `DirectML.dll` 复制成 **0 字节** → 进程 `0xC0000020`（STATUS_DLL_INIT_FAILED）异常退出。真身在 `%LOCALAPPDATA%/ort.pyke.io/dfbin/x86_64-pc-windows-msvc/<hash>/DirectML.dll`（18,527,776 B）。`cargo clean` 后可能复发。
 - 网络：`huggingface.co` 经本机代理不可达，**大模型文件走 `hf-mirror.com`**；cargo 需 rsproxy 镜像（临时 `--config source.crates-io.replace-with`），pip 走 aliyun 镜像。
+
+---
+
+## 自动更新（2026-10-27 接入）
+
+- 链路：`tauri-plugin-updater` 读 GitHub Release 的 `latest.json` → 验签 → NSIS `passive` 安装 → 应用自行退出并重启（Windows 上 `downloadAndInstall()` 不会 resolve，**不要指望它返回后跑收尾逻辑**）。
+- 前端入口只允许出现在 `src/runtime/tauri-runtime.ts`：`DesktopRuntime.checkUpdate()` 返回 `AppUpdateInfo | null`，`installUpdate(onProgress)` 负责下载。**不要再为它加 Rust IPC 命令** —— `Update` 句柄无法跨 IPC 安全持有。
+- 依赖通过 `TauriBindings.updater` 注入，缺省才用真插件。测试一律注入 fake，禁止 mock `@tauri-apps/plugin-updater` 模块。
+- 更新状态是会话态：放 `App` 的 `useState`，**不进 `AppState`**（后端快照只装后端拥有的状态），也不落盘。
+- 自动检查只在启动后 `AUTO_CHECK_DELAY_MS`（8s）静默跑一次，失败一律吞掉；**不静默安装**，安装必须过 `ConfirmDialog`。
+- 签名密钥纪律：私钥只在 `~/.tauri/` + GitHub Secrets `TAURI_SIGNING_PRIVATE_KEY`，`.gitignore` 已挡 `*.key` / `*.pem`。**私钥或密码丢失 = 永久失去给已安装用户推送更新的能力**，没有恢复手段。
+- `latest.json` 只对「已发布且非 prerelease」的 release 生效；发 draft 或 prerelease 会让客户端 404。
+- 首个带 updater 的版本，老客户端（≤ 0.2.2）必须手动装一次才能进入自动更新通道。
+- CI 侧用 `tauri-apps/tauri-action`（`includeUpdaterJson` + `updaterJsonPreferNsis`）产出清单；已有的 tag/版本一致性校验必须留在构建设置之前。

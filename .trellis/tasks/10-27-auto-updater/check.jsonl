@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "收尾门禁与禁止项核对"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "App.tsx 组件风格与 ConfirmDialog 约定"}
