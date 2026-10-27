@@ -157,3 +157,7 @@ cargo test          # 在 src-tauri/ 目录下运行
 - `latest.json` 只对「已发布且非 prerelease」的 release 生效；发 draft 或 prerelease 会让客户端 404。
 - 首个带 updater 的版本，老客户端（≤ 0.2.2）必须手动装一次才能进入自动更新通道。
 - CI 侧用 `tauri-apps/tauri-action`（`includeUpdaterJson` + `updaterJsonPreferNsis`）产出清单；已有的 tag/版本一致性校验必须留在构建设置之前。
+- ⚠️ **`tauri-action` 默认执行 `npm run tauri build`**。本项目脚本是 `tauri:dev` / `tauri:build`，没有裸 `tauri` 脚本时 npm 直接 `Missing script: tauri` → exit 1，表现为**发布任务秒失败**。`package.json` 里必须保留 `"tauri": "tauri"` 这一行。
+- ⚠️ **action 的输入名以 `@v0` tag 为准，不要照 dev 分支的 action.yml 抄**：v0 是 `includeUpdaterJson`，dev 已改名 `uploadUpdaterJson`。写错的输入不会报错，只在注解里给一条 `Unexpected input(s)` warning 然后被静默忽略。
+- 排查 CI 失败不要指望下载日志（公开仓库的 job logs 接口仍返回 403）。未认证可用的路径是 `GET /repos/{owner}/{repo}/check-runs/{id}/annotations`，能直接拿到失败步骤的命令行与退出码。
+- 发布产物就是 `*-setup.exe` + `.exe.sig`，**没有 `.nsis.zip`**（v2 不再打 zip），`latest.json` 里 `windows-x86_64` 与 `windows-x86_64-nsis` 都指向同一个 exe。校验资产时不要断言 `*.nsis.zip` 存在。
