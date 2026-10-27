@@ -46,9 +46,13 @@ import type {
   WallpaperMode,
 } from "./runtime/types";
 import { tauriRuntime } from "./runtime/tauri-runtime";
+import { version as packageVersion } from "../package.json";
 
 const previewImage =
   "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1600&q=85";
+
+/** 应用版本号：与 package.json / tauri.conf.json 保持单一来源，发版自动跟随。 */
+const APP_VERSION = `v${packageVersion}`;
 
 /** 切换间隔的手动输入范围（分钟）：与后端 `update_preferences` 的钳制保持一致。 */
 const INTERVAL_MINUTES = { min: 1, max: 43_200 } as const;
@@ -243,7 +247,7 @@ export default function App({ runtime }: { runtime?: DesktopRuntime }) {
         <div className="titlebar-brand">
           <span className="zx-mark" aria-hidden="true">ZX</span>
           <span>ZX Wallpaper</span>
-          <span className="titlebar-version">v0.1.5</span>
+          <span className="titlebar-version">{APP_VERSION}</span>
         </div>
       </header>
       <div className="app-body">
@@ -273,7 +277,7 @@ export default function App({ runtime }: { runtime?: DesktopRuntime }) {
           <div className="sidebar-runtime">
             <span className={state.paused ? "runtime-dot is-paused" : "runtime-dot"} />
             <span>{state.paused ? "已暂停" : "后台运行中"}</span>
-            <small>ZX Wallpaper · v0.1.5</small>
+            <small>ZX Wallpaper · {APP_VERSION}</small>
           </div>
         </aside>
         <main className="prototype-main">
@@ -877,16 +881,26 @@ function SyncLogDetail({ log }: { log: OnlineSyncLog }) {
 function SourceRow({ source, api, busy, run }: { source: OnlineSource; api: DesktopRuntime; busy: string | null; run: (key: string, action: () => Promise<unknown>) => Promise<void> }) {
   const nextSource = (patch: Partial<OnlineSource>) => ({ ...source, ...patch });
   const statuses = new Map((source.categoryStatuses ?? []).map((status) => [status.key, status]));
+  const allCategoryKeys: string[] = upx8Categories.map((category) => category.key);
+  /** 空即全部（与后端 canonical form 一致），因此旧配置天然全选。 */
+  const syncCategories: string[] = source.syncCategories?.length ? source.syncCategories : allCategoryKeys;
+  const toggleSyncCategory = (key: string) => {
+    const next = syncCategories.includes(key) ? syncCategories.filter((item) => item !== key) : [...syncCategories, key];
+    if (next.length === 0) return;
+    void run(`source-${source.id}`, () => api.updateOnlineSource(nextSource({ syncCategories: next })));
+  };
   return <article className="source-row">
     <div className="source-row-header">
       <Toggle label={`启用 ${source.name}`} checked={source.enabled} onChange={(enabled) => void run(`source-${source.id}`, () => api.updateOnlineSource(nextSource({ enabled })))} />
       <div className="source-copy"><strong>{source.name}</strong><span>{source.url}</span><small>{source.lastDiscovered} 发现 · {source.lastDownloaded} 下载 {source.nextRunAt ? `· 下次 ${formatTime(source.nextRunAt)}` : ""}</small>{source.lastError && <small className="source-error">{source.lastError}</small>}</div>
       <div className="source-actions"><label className="inline-select">间隔<select aria-label={`抓取间隔 ${source.name}`} value={source.intervalHours} onChange={(event) => void run(`source-${source.id}`, () => api.updateOnlineSource(nextSource({ intervalHours: Number(event.target.value) as OnlineSource["intervalHours"] })))}>{onlineIntervals.map((hours) => <option key={hours} value={hours}>{hours} 小时</option>)}</select></label><button className="action-button is-small" type="button" disabled={busy !== null} onClick={() => void run(`run-${source.id}`, () => api.runOnlineSource(source.id))}><CloudDownload size={14} /> 同步全部</button></div>
     </div>
+    <div className="source-category-summary"><span>定时同步 {syncCategories.length}/{upx8Categories.length} 类{syncCategories.length === 1 ? " · 至少保留 1 个分类" : ""}</span>{syncCategories.length < upx8Categories.length && <button className="action-button is-small" type="button" aria-label="定时同步全部纳入" disabled={busy !== null} onClick={() => void run(`source-${source.id}`, () => api.updateOnlineSource(nextSource({ syncCategories: allCategoryKeys })))}>全部纳入</button>}</div>
     <div className="source-category-grid" aria-label="UPX8 分类同步">
       {upx8Categories.map((category) => {
         const status = statuses.get(category.key);
-        return <div className="source-category" key={category.key}><div><strong>{category.label}</strong><small>{status ? `${status.discovered} 发现 · ${status.downloaded} 下载` : "尚未同步"}</small>{status?.lastError && <em>{status.lastError}</em>}</div><button className="action-button is-small" type="button" aria-label={`同步分类 ${category.label}`} disabled={busy !== null} onClick={() => void run(`run-upx8-${category.key}`, () => api.runUpx8Category(category.key))}><RefreshCw size={13} /> 同步</button></div>;
+        const isSynced = syncCategories.includes(category.key);
+        return <div className="source-category" key={category.key}><input className="source-category-sync" type="checkbox" aria-label={`定时同步 ${category.label}`} checked={isSynced} disabled={busy !== null || (isSynced && syncCategories.length === 1)} onChange={() => toggleSyncCategory(category.key)} /><div><strong>{category.label}</strong><small>{status ? `${status.discovered} 发现 · ${status.downloaded} 下载` : "尚未同步"}</small>{status?.lastError && <em>{status.lastError}</em>}</div><button className="action-button is-small" type="button" aria-label={`同步分类 ${category.label}`} disabled={busy !== null} onClick={() => void run(`run-upx8-${category.key}`, () => api.runUpx8Category(category.key))}><RefreshCw size={13} /> 同步</button></div>;
       })}
     </div>
   </article>;
@@ -978,7 +992,7 @@ function SettingsView({ state, api, busy, run, updateConfig }: { state: AppState
     <SettingsPanel title="系统集成"><SettingsRow label="开机自动启动" description="仅在系统托盘运行，不显示主窗口"><Toggle label="开机自动启动" checked={state.autoStart} onChange={(autoStart) => updateConfig({ autoStart })} /></SettingsRow><SettingsRow label="跟随系统主题" description="深色 / 浅色主题切换时同步调整"><Toggle label="跟随系统主题" checked={state.followSystemTheme} onChange={(followSystemTheme) => updateConfig({ followSystemTheme })} /></SettingsRow><SettingsRow label="关闭窗口时隐藏到托盘" description="关闭后继续在后台运行"><Toggle label="关闭窗口时隐藏到托盘" checked={state.hideToTrayOnClose} onChange={(hideToTrayOnClose) => updateConfig({ hideToTrayOnClose })} /></SettingsRow></SettingsPanel>
     <TaggingSettings state={state} api={api} busy={busy} run={run} />
     <SettingsPanel title="全局快捷键"><SettingsRow label="下一张壁纸" description="保存时立即尝试注册"><div className="shortcut-editor"><input aria-label="全局下一张快捷键" placeholder="例如 Ctrl+Alt+N" value={nextShortcut} onChange={(event) => setNextShortcut(event.target.value)} onBlur={saveNextShortcut} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><ShortcutStatusTag status={state.shortcutStatus} /></div></SettingsRow><SettingsRow label="跳过此图" description="保存时立即尝试注册"><div className="shortcut-editor"><input aria-label="全局跳过快捷键" placeholder="例如 Ctrl+Alt+S" value={skipShortcut} onChange={(event) => setSkipShortcut(event.target.value)} onBlur={saveSkipShortcut} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><ShortcutStatusTag status={state.skipShortcutStatus} /></div></SettingsRow></SettingsPanel>
-    <SettingsPanel title="更新"><SettingsRow label="当前版本" description="手动检查并由用户确认下载"><span className="settings-version">v0.1.5</span></SettingsRow><SettingsRow label="检查更新" description="当前发布未配置签名更新清单"><button className="action-button is-small" type="button" disabled title="需要签名私钥和更新地址">检查更新</button></SettingsRow></SettingsPanel>
+    <SettingsPanel title="更新"><SettingsRow label="当前版本" description="手动检查并由用户确认下载"><span className="settings-version">{APP_VERSION}</span></SettingsRow><SettingsRow label="检查更新" description="当前发布未配置签名更新清单"><button className="action-button is-small" type="button" disabled title="需要签名私钥和更新地址">检查更新</button></SettingsRow></SettingsPanel>
   </div>;
 }
 

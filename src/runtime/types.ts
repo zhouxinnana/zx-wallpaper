@@ -49,6 +49,8 @@ export interface OnlineSource {
   url: string;
   enabled: boolean;
   intervalHours: 1 | 6 | 12 | 24;
+  /** 定时同步参与的 UPX8 分类 key；缺省或空表示全部。 */
+  syncCategories?: string[];
   lastRunAt: string | null;
   nextRunAt: string | null;
   lastDiscovered: number;

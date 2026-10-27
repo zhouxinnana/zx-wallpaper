@@ -62,6 +62,9 @@ pub struct OnlineSource {
     pub url: String,
     pub enabled: bool,
     pub interval_hours: u8,
+    /// 定时同步参与的 UPX8 分类 key。空表示全部（含未来新增分类）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sync_categories: Vec<String>,
     pub last_run_at: Option<String>,
     pub next_run_at: Option<String>,
     pub last_discovered: usize,

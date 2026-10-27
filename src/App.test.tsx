@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import type { AppConfig, AppState, DesktopRuntime, ImageTag, TaggingStatus } from "./runtime/types";
+import type { AppConfig, AppState, DesktopRuntime, ImageTag, OnlineSource, TaggingStatus } from "./runtime/types";
 
 afterEach(cleanup);
 
@@ -224,6 +224,65 @@ describe("ZX Wallpaper application shell", () => {
     await user.selectOptions(interval, "6");
 
     expect((interval as HTMLSelectElement).value).toBe("6");
+  });
+
+  it("syncs every upx8 category by default", async () => {
+    const user = userEvent.setup();
+    render(<App runtime={createOnlineGalleryRuntime(0)} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+
+    const checkboxes = screen.getAllByLabelText(/^定时同步 /) as HTMLInputElement[];
+    expect(checkboxes).toHaveLength(10);
+    expect(checkboxes.every((checkbox) => checkbox.checked)).toBe(true);
+    expect(screen.queryByRole("button", { name: "定时同步全部纳入" })).toBeNull();
+  });
+
+  it("persists the categories excluded from the interval sync", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0);
+    const updateOnlineSource = vi.fn(async (source: OnlineSource) => {
+      const current = await runtime.getState();
+      return { ...current, onlineSources: current.onlineSources.map((item) => (item.id === source.id ? source : item)) };
+    });
+    runtime.updateOnlineSource = updateOnlineSource;
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+    await user.click(screen.getByLabelText("定时同步 运动"));
+
+    const updated = updateOnlineSource.mock.calls[0][0];
+    expect(updated.syncCategories).toHaveLength(9);
+    expect(updated.syncCategories).not.toContain("sport");
+    expect(await screen.findByText("定时同步 9/10 类")).toBeTruthy();
+  });
+
+  it("keeps the last synced category selected", async () => {
+    const user = userEvent.setup();
+    const runtime = createOnlineGalleryRuntime(0, undefined, undefined, undefined, {
+      onlineSources: [{
+        id: "upx8-4k",
+        name: "UPX8 综合壁纸 4K",
+        url: "https://wp.upx8.com/api.php",
+        enabled: true,
+        intervalHours: 24,
+        syncCategories: ["sport"],
+        lastRunAt: null,
+        nextRunAt: null,
+        lastDiscovered: 0,
+        lastDownloaded: 0,
+        lastError: null,
+      }],
+    });
+    render(<App runtime={runtime} />);
+
+    await user.click(await screen.findByRole("button", { name: "图库" }));
+
+    const checkbox = screen.getByLabelText("定时同步 运动") as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.disabled).toBe(true);
+    expect(screen.getByText(/至少保留 1 个分类/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "定时同步全部纳入" })).toBeTruthy();
   });
 
   it("persists the requested rotation order from settings", async () => {

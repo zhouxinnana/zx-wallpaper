@@ -472,6 +472,7 @@ pub(crate) fn built_in_sources() -> Vec<OnlineSource> {
         url: "https://wp.upx8.com/api.php".to_string(),
         enabled: false,
         interval_hours: 24,
+        sync_categories: Vec::new(),
         last_run_at: None,
         next_run_at: None,
         last_discovered: 0,
@@ -510,6 +511,51 @@ fn normalize_upx8_category_statuses(
         .collect()
 }
 
+/// 全部分类 key，按 `UPX8_CATEGORIES` 顺序。
+pub(crate) fn all_upx8_category_keys() -> Vec<String> {
+    UPX8_CATEGORIES
+        .iter()
+        .map(|(key, _)| (*key).to_string())
+        .collect()
+}
+
+/// 宽容归一化：丢弃未知 key、去重、按 `UPX8_CATEGORIES` 顺序输出。
+/// 选择集合等于全集时收敛为空 —— 空即「全部」，保证存储形式唯一。
+pub(crate) fn normalize_sync_categories(categories: &[String]) -> Vec<String> {
+    let normalized: Vec<String> = UPX8_CATEGORIES
+        .iter()
+        .map(|(key, _)| *key)
+        .filter(|key| categories.iter().any(|candidate| candidate == key))
+        .map(str::to_string)
+        .collect();
+    if normalized.len() >= UPX8_CATEGORIES.len() {
+        Vec::new()
+    } else {
+        normalized
+    }
+}
+
+/// 严格校验：只用于命令入口，含未知 key 时上报中文错误。
+pub(crate) fn validate_sync_categories(categories: &[String]) -> Result<Vec<String>, String> {
+    if categories
+        .iter()
+        .any(|candidate| upx8_category_label(candidate).is_none())
+    {
+        return Err("UPX8 分类不存在。".to_string());
+    }
+    Ok(normalize_sync_categories(categories))
+}
+
+/// 定时同步实际请求的分类。空配置（未设置或全选）回退为全部。
+pub(crate) fn due_sync_category_keys(source: &OnlineSource) -> Vec<String> {
+    let selected = normalize_sync_categories(&source.sync_categories);
+    if selected.is_empty() {
+        all_upx8_category_keys()
+    } else {
+        selected
+    }
+}
+
 pub(crate) fn merge_online_sources(saved: Vec<OnlineSource>) -> Vec<OnlineSource> {
     let mut saved_by_id: HashMap<_, _> = saved
         .iter()
@@ -529,12 +575,39 @@ pub(crate) fn merge_online_sources(saved: Vec<OnlineSource>) -> Vec<OnlineSource
                 builtin.last_discovered = saved.last_discovered;
                 builtin.last_downloaded = saved.last_downloaded;
                 builtin.last_error = saved.last_error.clone();
+                builtin.sync_categories = normalize_sync_categories(&saved.sync_categories);
                 builtin.category_statuses = normalize_upx8_category_statuses(&saved.category_statuses);
             }
             builtin
         })
         .collect();
     merged
+}
+
+/// 把一次来源设置变更落到 config。命令体只做转发，逻辑留在这里以便单测。
+///
+/// 先校验再赋值：校验失败时 config 必须保持原样，不能留下「enabled 改了、
+/// 分类没改」的半截状态。
+pub(crate) fn apply_source_settings(
+    config: &mut AppConfig,
+    source: &OnlineSource,
+) -> Result<(), String> {
+    if source.id != "upx8-4k" {
+        return Err("仅支持 UPX8 综合壁纸 4K 来源。".to_string());
+    }
+    let sync_categories = validate_sync_categories(&source.sync_categories)?;
+    let saved = config
+        .online_sources
+        .iter_mut()
+        .find(|saved| saved.id == source.id)
+        .ok_or_else(|| "该在线来源已不存在。".to_string())?;
+    saved.enabled = source.enabled;
+    saved.interval_hours = match source.interval_hours {
+        1 | 6 | 12 | 24 => source.interval_hours,
+        _ => 24,
+    };
+    saved.sync_categories = sync_categories;
+    Ok(())
 }
 
 #[tauri::command]
@@ -544,20 +617,7 @@ pub fn update_online_source(
     source: OnlineSource,
 ) -> Result<AppState, String> {
     mutate_without_rescan(&app, &state, move |config| {
-        if source.id != "upx8-4k" {
-            return Err("仅支持 UPX8 综合壁纸 4K 来源。".to_string());
-        }
-        let saved = config
-            .online_sources
-            .iter_mut()
-            .find(|saved| saved.id == source.id)
-            .ok_or_else(|| "该在线来源已不存在。".to_string())?;
-        saved.enabled = source.enabled;
-        saved.interval_hours = match source.interval_hours {
-            1 | 6 | 12 | 24 => source.interval_hours,
-            _ => 24,
-        };
-        Ok(())
+        apply_source_settings(config, &source)
     })
 }
 
@@ -619,15 +679,12 @@ pub(crate) async fn run_online_source_impl(
         return Err("该在线来源当前已禁用。".to_string());
     }
 
-    let category_keys = category_key
-        .as_deref()
-        .map(|key| vec![key.to_string()])
-        .unwrap_or_else(|| {
-            UPX8_CATEGORIES
-                .iter()
-                .map(|(key, _)| (*key).to_string())
-                .collect()
-        });
+    let category_keys = match category_key {
+        Some(key) => vec![key],
+        // 手动「同步全部」不受定时分类选择影响。
+        None if manual => all_upx8_category_keys(),
+        None => due_sync_category_keys(&source),
+    };
     let log_ids = start_online_sync_logs(
         app,
         state,
@@ -1299,12 +1356,12 @@ fn select_online_wallpaper(config: &mut AppConfig, image_id: &str) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::{
-        due_source_ids, is_public_host,
-        is_upx8_cdn_url, known_online_urls, merge_online_sources, migrate_online_directory,
-        prune_missing_online_images, reconcile_online_candidates, remember_excluded_urls,
-        select_online_wallpaper,
+        all_upx8_category_keys, apply_source_settings, due_source_ids, due_sync_category_keys,
+        is_public_host, is_upx8_cdn_url, known_online_urls, merge_online_sources,
+        migrate_online_directory, normalize_sync_categories, prune_missing_online_images,
+        reconcile_online_candidates, remember_excluded_urls, select_online_wallpaper,
         sort_online_images_by_downloaded_at, upx8_category_label, upx8_request_url,
-        OnlineImage, OnlineSource, UPX8_CATEGORIES,
+        validate_sync_categories, OnlineImage, OnlineSource, UPX8_CATEGORIES,
     };
     use crate::domain::same_path;
     use crate::state::{AppConfig, LibraryScan};
@@ -1539,6 +1596,115 @@ mod tests {
             config.current_path.as_deref(),
             Some("D:\\ZX Wallpaper\\Online\\chosen.jpg")
         );
+    }
+
+    fn sync_categories(keys: &[&str]) -> Vec<String> {
+        keys.iter().map(|key| (*key).to_string()).collect()
+    }
+
+    #[test]
+    fn normalize_sync_categories_drops_unknown_keys_and_dedupes() {
+        let normalized = normalize_sync_categories(&sync_categories(&["nature", "nope", "nature"]));
+
+        assert_eq!(normalized, sync_categories(&["nature"]));
+    }
+
+    #[test]
+    fn normalize_sync_categories_orders_by_catalog() {
+        let normalized = normalize_sync_categories(&sync_categories(&["sport", "nature"]));
+
+        assert_eq!(normalized, sync_categories(&["nature", "sport"]));
+    }
+
+    #[test]
+    fn normalize_sync_categories_collapses_the_full_set_to_empty() {
+        let mut keys: Vec<&str> = UPX8_CATEGORIES.iter().map(|(key, _)| *key).collect();
+        keys.reverse();
+
+        assert!(normalize_sync_categories(&sync_categories(&keys)).is_empty());
+    }
+
+    #[test]
+    fn validate_sync_categories_rejects_unknown_keys() {
+        assert_eq!(
+            validate_sync_categories(&sync_categories(&["nope"])),
+            Err("UPX8 分类不存在。".to_string())
+        );
+    }
+
+    #[test]
+    fn due_sync_category_keys_falls_back_to_every_category_when_empty() {
+        let source = OnlineSource::default();
+
+        assert_eq!(due_sync_category_keys(&source), all_upx8_category_keys());
+        assert_eq!(due_sync_category_keys(&source).len(), 10);
+    }
+
+    #[test]
+    fn due_sync_category_keys_uses_the_saved_selection() {
+        let source = OnlineSource {
+            sync_categories: sync_categories(&["game", "anime"]),
+            ..OnlineSource::default()
+        };
+
+        assert_eq!(
+            due_sync_category_keys(&source),
+            sync_categories(&["anime", "game"])
+        );
+    }
+
+    #[test]
+    fn merge_online_sources_keeps_the_saved_sync_categories() {
+        let saved_source = OnlineSource {
+            id: "upx8-4k".into(),
+            sync_categories: sync_categories(&["nope", "anime"]),
+            ..OnlineSource::default()
+        };
+
+        let merged = merge_online_sources(vec![saved_source]);
+
+        assert_eq!(merged[0].sync_categories, sync_categories(&["anime"]));
+    }
+
+    #[test]
+    fn apply_source_settings_persists_the_sync_categories() {
+        let mut config = AppConfig {
+            online_sources: merge_online_sources(Vec::new()),
+            ..AppConfig::default()
+        };
+        let source = OnlineSource {
+            id: "upx8-4k".into(),
+            enabled: true,
+            interval_hours: 6,
+            sync_categories: sync_categories(&["anime", "game"]),
+            ..OnlineSource::default()
+        };
+
+        apply_source_settings(&mut config, &source).unwrap();
+
+        let applied = &config.online_sources[0];
+        assert!(applied.enabled);
+        assert_eq!(applied.interval_hours, 6);
+        assert_eq!(applied.sync_categories, sync_categories(&["anime", "game"]));
+    }
+
+    #[test]
+    fn apply_source_settings_rejects_unknown_category_without_changing_config() {
+        let mut config = AppConfig {
+            online_sources: merge_online_sources(Vec::new()),
+            ..AppConfig::default()
+        };
+        let source = OnlineSource {
+            id: "upx8-4k".into(),
+            enabled: true,
+            interval_hours: 6,
+            sync_categories: sync_categories(&["nope"]),
+            ..OnlineSource::default()
+        };
+
+        assert!(apply_source_settings(&mut config, &source).is_err());
+        assert!(!config.online_sources[0].enabled);
+        assert_eq!(config.online_sources[0].interval_hours, 24);
     }
 
     #[test]

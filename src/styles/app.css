@@ -164,10 +164,13 @@ select:hover, input:hover:not(:disabled) { border-color: rgba(192, 132, 252, .4)
 .source-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; }
 .source-actions .inline-select { gap: 5px; }
 /* 分类同步列表：单列。两列时每格只剩约 120px，「同步」按钮会被挤到换行或溢出。 */
+.source-category-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 10px; }
+.source-category-summary span { color: rgba(226, 220, 245, .45); font: 10px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; }
 .source-category-grid { display: grid; grid-template-columns: minmax(0, 1fr); margin-top: 12px; border-top: 1px solid rgba(255, 255, 255, .06); }
 .source-category { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 2px; border-bottom: 1px solid rgba(255, 255, 255, .06); }
 .source-category:last-child { border-bottom: 0; }
-.source-category > div { min-width: 0; display: grid; gap: 3px; }
+.source-category > div { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.source-category-sync { flex: 0 0 auto; width: 13px; height: 13px; margin: 0; accent-color: #9333ea; cursor: pointer; }
 .source-category strong { overflow: hidden; color: #efeafa; font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .source-category small { overflow: hidden; color: rgba(226, 220, 245, .45); font: 10px "Cascadia Mono", "JetBrains Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .source-category em { overflow: hidden; color: #f87171; font-size: 9px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
