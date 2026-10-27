@@ -8,6 +8,7 @@
     "dev": "tauri dev",
     "vite": "vite --host 127.0.0.1",
     "web:build": "vite build",
+    "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "test": "vitest run",
