@@ -38,6 +38,34 @@ jobs:
             throw "Tauri release tags must reference a commit reachable from tauri_master."
           }
 
+      # 用签名工具本体校验 Secret，比事后看构建日志直观：
+      # 私钥是单行 base64，粘成文件路径、带换行或首尾空白都会在这里立刻失败。
+      - name: Verify signing key
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          $key = $env:TAURI_SIGNING_PRIVATE_KEY
+          if ([string]::IsNullOrWhiteSpace($key)) {
+            throw "Secret TAURI_SIGNING_PRIVATE_KEY 未配置或为空。"
+          }
+          if ($key -ne $key.Trim()) {
+            throw "私钥首尾含空白字符（长度 $($key.Length)，裁剪后 $($key.Trim().Length)），请重新粘贴单行内容。"
+          }
+          if ($key -match "\r|\n") {
+            throw "私钥包含换行，应为单行 base64。"
+          }
+          if ($key -lt 200) {
+            throw "私钥长度异常（$($key.Length) 字符），看起来不像密钥内容；确认粘贴的不是文件路径。"
+          }
+          Set-Content -Path sign-probe.txt -Value "probe"
+          npx tauri signer sign sign-probe.txt
+          if (-not (Test-Path sign-probe.txt.sig)) {
+            throw "私钥无法解出签名，请检查密钥内容与密码（私钥为空密码，PASSWORD 必须为空字符串）。"
+          }
+          Write-Host "签名密钥可用，长度 $($key.Length)。"
+
       # tauri-action 负责构建、签名、上传 .exe / .nsis.zip / .sig，并生成 updater 清单 latest.json。
       # latest.json 只对「已发布且非 prerelease」的 release 生效——客户端固定读
       # releases/latest/download/latest.json，若发成 draft 或 prerelease 会导致 404。
@@ -53,7 +81,7 @@ jobs:
           releaseName: ${{ github.ref_name }}
           releaseDraft: false
           prerelease: false
-          uploadUpdaterJson: true
+          includeUpdaterJson: true
           updaterJsonPreferNsis: true
           generateReleaseNotes: true
 
