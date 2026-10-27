@@ -1,6 +1,6 @@
 {
   "name": "zx-wallpaper",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "description": "Windows 11 local wallpaper switcher",
   "type": "module",
