@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "前端规范索引：确认本任务涉及的目录结构、组件、状态、类型、质量五类规范入口"}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "改动跨 Rust 命令 + TS 类型镜像 + App.tsx 时必须遵守的 IPC 新增/修改路径与命名约定"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "SourceRow 是 App.tsx 文件内组件；必须沿用 run() 包裹、aria-label 可访问名、禁止新建组件文件"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "OnlineSource 是手工镜像的 IPC 类型，禁止 any、cast 只允许出现在 select 表单值处"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "写入走 updateOnlineSource 返回的 AppState 整体替换，不引入本地派生状态"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "门禁命令、cargo check 优先于 cargo test 的频率纪律、Rust 把命令体逻辑抽成纯函数以便单测、后台失败只写状态不弹提示"}
+{"file": ".trellis/spec/guides/index.md", "reason": "跨包通用思维指南：改动前后的一致性检查清单"}

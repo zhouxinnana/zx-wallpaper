@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "对照检查门禁是否全绿、是否只跑必要测试、用户可见文案是否为中文且用 CONTEXT.md 词汇"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "检查 Rust OnlineSource 与 TS OnlineSource 的字段/可空性是否严格镜像，有无越界 cast 或 any"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "检查新增控件是否都有中文 aria-label、是否经 run() 写入、有无破坏单文件 UI 约束"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "收尾全量检查时的规范入口索引"}
