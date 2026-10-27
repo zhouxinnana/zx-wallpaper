@@ -105,6 +105,20 @@ cargo test          # 在 src-tauri/ 目录下运行
 - 修复后不落盘会留下「磁盘上没有状态文件」的中间态，必须补一次 `persist`。
 - 回归测试：`load_from_dir_recovers_when_state_file_is_not_valid_utf8`、`..._when_state_file_is_corrupt`、`..._without_backup_when_state_file_is_missing`。
 
+### 可选集合配置的持久化约定（2026-10-27）
+
+对「用户可选的子集，空 = 全部」这类配置（如 `OnlineSource.sync_categories`）：
+
+- 字段用 `#[serde(default, skip_serializing_if = "Vec::is_empty")]`，旧配置读入空 Vec，零迁移。
+- **归一化时把「全集」收敛回空**：`normalize_sync_categories` 在 `len >= UPX8_CATEGORIES.len()` 时返回 `vec![]`。这样「默认」和「用户全选」只有一种存储形式，否则两种等价状态会让之后每次比较和断言都要写双分支。
+- 读盘路径（`merge_online_sources`）用宽容归一化（丢弃非法 key）；写入路径（`apply_source_settings`）用严格校验（非法 key → 中文 Err）。读盘阶段报错会把脏配置升级成「应用打不开」。
+- 命令体的设置写入走 `apply_source_settings` 这类纯函数，并且**先校验后赋值**：用 `?` 提前返回会留下「enabled 改了、分类没改」的半截状态。
+- `built_in_sources()` 是结构体完整字面量，给 `OnlineSource` 加字段必须同步补 `sync_categories: Vec::new()`，`cargo check` 首轮就会报。
+
+### 定时任务与手动命令的分流（2026-10-27）
+
+`run_online_source_impl(..., category_key, manual)` 用 `manual` 区分后台定时（`system.rs::run_due_tasks` 传 `false`）与手动触发（命令层传 `true`）：手动路径必须保持全量，只有定时路径读用户配置。新增「受用户配置影响的后台行为」时沿用这个三元分支（`Some(key)` / `None if manual` / `None`），不要用「配置为空就代表手动」这类隐式判断。
+
 ---
 
 ## 桌面应用冒烟（进程级验证）
